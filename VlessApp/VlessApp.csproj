@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
@@ -17,8 +17,8 @@
     <FileAlignment>512</FileAlignment>
     <ProjectTypeGuids>{A5A43C5B-DE2A-4C0C-9213-0A381AF9435A};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}</ProjectTypeGuids>
     <WindowsXamlEnableOverview>true</WindowsXamlEnableOverview>
-    <PackageCertificateKeyFile>VlessApp_TemporaryKey.pfx</PackageCertificateKeyFile>
-    <PackageCertificateThumbprint>9F6CC2BBAEE2D92D7E361CD5BA867B3EC276BB05</PackageCertificateThumbprint>
+    
+    <PackageCertificateThumbprint>859FEC5858DA8441E8AE3B6B363657CF337E3064</PackageCertificateThumbprint>
     <GenerateAppInstallerFile>False</GenerateAppInstallerFile>
     <AppxAutoIncrementPackageRevision>False</AppxAutoIncrementPackageRevision>
     <AppxSymbolPackageEnabled>False</AppxSymbolPackageEnabled>
@@ -148,6 +148,16 @@
     <Compile Include="HappCrypto.cs" />
     <Compile Include="VlessProfile.cs" />
     <Compile Include="VpnManager.cs" />
+    <Compile Include="Models\ProfileGroup.cs" />
+    <Compile Include="Mvvm\ObservableObject.cs" />
+    <Compile Include="Mvvm\RelayCommand.cs" />
+    <Compile Include="Mvvm\AsyncRelayCommand.cs" />
+    <Compile Include="Services\PingService.cs" />
+    <Compile Include="Services\ProfileStore.cs" />
+    <Compile Include="Services\VpnService.cs" />
+    <Compile Include="ViewModels\MainViewModel.cs" />
+    <Compile Include="Services\QrDecoder.cs" />
+    <Compile Include="Services\ShareLinkBuilder.cs" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -31,7 +31,7 @@ namespace VlessVpnTask
         public XhttpStreamOne(VlessConfig cfg)
         {
             _cfg = cfg;
-            SessionId = Guid.NewGuid().ToString("N");
+            SessionId = Guid.NewGuid().ToString("D");
         }
 
         // ===================== REQUEST HEAD =====================
@@ -47,6 +47,25 @@ namespace VlessVpnTask
             int padLen = _rnd.Next(_cfg.XPaddingMin, _cfg.XPaddingMax + 1);
             string pad = new string('X', padLen);   // 'X' = 8 бит в huffman, как в спеке
 
+            string reqPath;
+            List<KeyValuePair<string, string>> extraHeaders;
+            _cfg.BuildXhttpRequestMeta(null, null, out reqPath, out extraHeaders);
+
+            var sb = new StringBuilder();
+            sb.Append("POST ").Append(reqPath).Append(" HTTP/1.1\r\n");
+            sb.Append("Host: ").Append(host).Append("\r\n");
+            sb.Append("User-Agent: Go-http-client/1.1\r\n");
+            sb.Append("Transfer-Encoding: chunked\r\n");
+            sb.Append("Content-Type: ").Append(_cfg.NoGrpcHeader ? "application/octet-stream" : "application/grpc").Append("\r\n");
+            foreach (var kv in extraHeaders)
+                sb.Append(kv.Key).Append(": ").Append(kv.Value).Append("\r\n");
+            sb.Append("Accept-Encoding: identity\r\n");
+            sb.Append("\r\n");
+            return Encoding.ASCII.GetBytes(sb.ToString());
+        }
+        private byte[] LegacyBuildRequestHeadUnused()
+        {
+            string host = ""; string path = ""; string pad = "";
             var sb = new StringBuilder();
             sb.Append("POST ").Append(path).Append(" HTTP/1.1\r\n");
             sb.Append("Host: ").Append(host).Append("\r\n");

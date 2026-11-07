@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Threading.Tasks;
@@ -16,6 +16,7 @@ namespace VlessVpnTask
 
         private static readonly byte[] Preface = Encoding.ASCII.GetBytes("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
 
+        private readonly VlessConfig _cfg;
         private readonly string _authority;
         private readonly string _path;
         private readonly string _referer;
@@ -47,6 +48,7 @@ namespace VlessVpnTask
 
         public Http2Conn(VlessConfig cfg)
         {
+            _cfg = cfg;
             string host = !string.IsNullOrEmpty(cfg.Host) ? cfg.Host
                         : (!string.IsNullOrEmpty(cfg.Sni) ? cfg.Sni : cfg.Address);
             _authority = host;
@@ -87,13 +89,31 @@ namespace VlessVpnTask
         // HEADERS для POST stream-one на stream 1 (END_HEADERS, без END_STREAM)
         public byte[] BuildHeaders()
         {
+            string reqPath;
+            List<KeyValuePair<string, string>> extraHeaders;
+            _cfg.BuildXhttpRequestMeta(null, null, out reqPath, out extraHeaders);
             var h = new List<byte>();
+            h.Add(0x83);                              // :method POST   (static idx 3)
+            h.Add(0x87);                              // :scheme https  (static idx 7)
+            h.Add(0x01); WriteHpackStr(h, _authority); // :authority (static name idx 1)
+            h.Add(0x04); WriteHpackStr(h, reqPath);    // :path      (static name idx 4)
+            string ct = _cfg.NoGrpcHeader ? "application/octet-stream" : "application/grpc";
+            h.Add(0x00); WriteHpackStr(h, "content-type"); WriteHpackStr(h, ct);
+            foreach (var kv in extraHeaders)
+            {
+                h.Add(0x00);
+                WriteHpackStr(h, kv.Key.ToLowerInvariant());
+                WriteHpackStr(h, kv.Value);
+            }
+            if (_referer == null)
+            {
             h.Add(0x83);                              // :method POST   (static idx 3)
             h.Add(0x87);                              // :scheme https  (static idx 7)
             h.Add(0x01); WriteHpackStr(h, _authority); // :authority (static name idx 1)
             h.Add(0x04); WriteHpackStr(h, _path);      // :path      (static name idx 4)
             h.Add(0x00); WriteHpackStr(h, "content-type"); WriteHpackStr(h, "application/octet-stream");
             h.Add(0x00); WriteHpackStr(h, "referer"); WriteHpackStr(h, _referer);
+            }
 
             var o = new List<byte>();
             WriteFrameHeader(o, h.Count, 0x1, 0x4, 1); // type=HEADERS, flags=END_HEADERS

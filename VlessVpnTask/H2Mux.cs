@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -41,13 +41,40 @@ namespace VlessVpnTask
         // окно ОТПРАВКИ этого стрима (сколько МЫ можем послать серверу); server
         // INITIAL_WINDOW_SIZE по умолчанию 65535. Меняется под H2MuxTransport._winLock.
         internal int SendWindow;
+        internal readonly string SessionId;
+        internal readonly XhttpTransportMode Mode;
+        internal H2Stream UploadStream;
+        private readonly SemaphoreSlim _upLock = new SemaphoreSlim(1, 1);
+        private long _upSeq;
+        private readonly GrpcFramer _grpcFramer;
 
-        internal H2Stream(H2MuxTransport t, int id, int initSendWindow)
+        internal H2Stream(H2MuxTransport t, int id, int initSendWindow, string sessionId = null, XhttpTransportMode mode = XhttpTransportMode.StreamOne)
         {
-            _t = t; Id = id; SendWindow = initSendWindow;
+            _t = t; Id = id; SendWindow = initSendWindow; SessionId = sessionId; Mode = mode;
+            if (_t.Config != null && _t.Config.IsGrpc) _grpcFramer = new GrpcFramer();
         }
 
-        internal void EnqueueDown(byte[] d) { lock (_lock) { _down.Enqueue(d); SignalLocked(); } }
+        internal void EnqueueDown(byte[] d)
+        {
+            lock (_lock)
+            {
+                if (_grpcFramer != null)
+                {
+                    _grpcFramer.PushData(d);
+                    while (true)
+                    {
+                        byte[] p = _grpcFramer.TryExtractPayload();
+                        if (p == null) break;
+                        if (p.Length > 0) _down.Enqueue(p);
+                    }
+                }
+                else
+                {
+                    _down.Enqueue(d);
+                }
+                SignalLocked();
+            }
+        }
         internal void MarkClosed() { lock (_lock) { _closed = true; SignalLocked(); } }
         internal void SignalHeaders() { lock (_lock) { SignalLocked(); } }
         private void SignalLocked() { if (_sig != null && !_sig.Task.IsCompleted) _sig.TrySetResult(true); }
@@ -85,8 +112,46 @@ namespace VlessVpnTask
             }
         }
 
-        public Task WriteAsync(byte[] data) { return _t.WriteStreamDataAsync(this, data); }
-        public void Close() { _t.CloseStream(this); }
+        public async Task WriteAsync(byte[] data)
+        {
+            if (data == null || data.Length == 0) return;
+            if (_t.Config != null && _t.Config.IsGrpc)
+            {
+                byte[] framed = GrpcFramer.WrapHunk(data, 0, data.Length);
+                await _t.WriteStreamDataAsync(this, framed);
+                return;
+            }
+            if (Mode == XhttpTransportMode.PacketUp)
+            {
+                await _upLock.WaitAsync();
+                try
+                {
+                    int maxPost = _t.Config.ScMaxEachPostBytes > 0 ? _t.Config.ScMaxEachPostBytes : 1000000;
+                    int off = 0;
+                    while (off < data.Length)
+                    {
+                        if (Closed) return;
+                        int chunkLen = Math.Min(data.Length - off, maxPost);
+                        long seq = _upSeq++;
+                        await _t.SendPacketUpAsync(SessionId, seq, data, off, chunkLen);
+                        off += chunkLen;
+                    }
+                }
+                finally { _upLock.Release(); }
+                return;
+            }
+            if (Mode == XhttpTransportMode.StreamUp && UploadStream != null)
+            {
+                await _t.WriteStreamDataAsync(UploadStream, data);
+                return;
+            }
+            await _t.WriteStreamDataAsync(this, data);
+        }
+        public void Close()
+        {
+            if (UploadStream != null) { try { _t.CloseStream(UploadStream); } catch { } }
+            _t.CloseStream(this);
+        }
     }
 
     internal sealed class H2MuxTransport
@@ -130,6 +195,7 @@ namespace VlessVpnTask
         private readonly List<byte> _pending = new List<byte>();
 
         public bool Dead { get { return _dead; } }
+        internal VlessConfig Config { get { return _cfg; } }
         public int Load { get { lock (_smapLock) { return _streams.Count + _reserved; } } }
 
         public H2MuxTransport(VlessConfig cfg)
@@ -168,6 +234,8 @@ namespace VlessVpnTask
                 await WriteFramesAsync(BuildClientHandshake());
                 _started = true;
                 var _ignore = Task.Run((Func<Task>)RunReadPumpAsync);
+                if (_cfg.XmuxKeepAlivePeriod > 0)
+                    { var _ka = Task.Run(() => RunKeepAliveAsync(_cfg.XmuxKeepAlivePeriod)); }
                 return true;
             }
             finally { _startLock.Release(); }
@@ -244,9 +312,16 @@ namespace VlessVpnTask
 
                     // Туннель говорит по HTTP/2. Если сервер выбрал http/1.1, дальше пойдут
                     // кадры, которых он не ждёт, — без этой строки причина была бы не видна.
-                    if (isTls && !string.IsNullOrEmpty(rs.NegotiatedAlpn) &&
-                        !string.Equals(rs.NegotiatedAlpn, "h2", StringComparison.OrdinalIgnoreCase))
-                        FileLog.Important($"[H2MUX] ВНИМАНИЕ: сервер выбрал ALPN '{rs.NegotiatedAlpn}' вместо h2 — xhttp через общий туннель ему не подойдёт.");
+                    if (isTls && !string.IsNullOrEmpty(rs.NegotiatedAlpn))
+                        if (!string.Equals(rs.NegotiatedAlpn, "h2", StringComparison.OrdinalIgnoreCase))
+                    {
+                        FileLog.Important($"[H2MUX] ВНИМАНИЕ: сервер выбрал ALPN '{rs.NegotiatedAlpn}' вместо h2 — переключаюсь на HTTP/1.1.");
+                        H2MuxRegistry.ServerRejectedH2 = true;
+                        try { writer.Dispose(); } catch { }
+                        try { reader.Dispose(); } catch { }
+                        try { sock.Dispose(); } catch { }
+                        return false;
+                    }
                     return true;
                 }
 
@@ -281,13 +356,120 @@ namespace VlessVpnTask
             {
                 if (_dead) return null;
                 id = _nextId; _nextId += 2;
+                var mode = _cfg.ResolveXhttpMode();
+                string sessionId = (mode == XhttpTransportMode.PacketUp || mode == XhttpTransportMode.StreamUp)
+                    ? Guid.NewGuid().ToString("D")
+                    : null;
+                st = new H2Stream(this, id, initWin, sessionId, mode);
+                _streams[id] = st;
+                if (mode == XhttpTransportMode.StreamUp)
+                {
+                    int upId = _nextId; _nextId += 2;
+                    var upSt = new H2Stream(this, upId, initWin, sessionId, mode);
+                    _streams[upId] = upSt;
+                    st.UploadStream = upSt;
+                }
+                if (_reserved > 0) _reserved--;
+            }
+            if (st.Mode == XhttpTransportMode.PacketUp)
+            {
+                await WriteFramesAsync(BuildGetHeaders(id, st.SessionId));
+            }
+            else if (st.Mode == XhttpTransportMode.StreamUp && st.UploadStream != null)
+            {
+                byte[] downHdr = BuildGetHeaders(id, st.SessionId);
+                byte[] upHdr = BuildPostStreamHeaders(st.UploadStream.Id, st.SessionId);
+                byte[] both = new byte[downHdr.Length + upHdr.Length];
+                global::System.Buffer.BlockCopy(downHdr, 0, both, 0, downHdr.Length);
+                global::System.Buffer.BlockCopy(upHdr, 0, both, downHdr.Length, upHdr.Length);
+                await WriteFramesAsync(both);
+            }
+            else
+            {
+                await WriteFramesAsync(BuildPostStreamHeaders(id, null));
+            }
+            if (_dead) { st.MarkClosed(); return null; }
+            return st;
+            /* unused */
+        }
+
+        internal async Task SendPacketUpAsync(string sessionId, long seq, byte[] payload, int offset, int length)
+        {
+            if (payload == null || length <= 0 || _dead) return;
+            int upId;
+            int initWin;
+            H2Stream upSt;
+            lock (_winLock) { initWin = _curInit; }
+            lock (_smapLock)
+            {
+                if (_dead) return;
+                upId = _nextId; _nextId += 2;
+                upSt = new H2Stream(this, upId, initWin, sessionId, XhttpTransportMode.PacketUp);
+                _streams[upId] = upSt;
+            }
+
+            byte[] hdrFrame = BuildPostPacketHeaders(upId, sessionId, seq, length);
+            int maxFrame = _peerMaxFrame > 0 ? Math.Min(_peerMaxFrame, 16384) : 16384;
+
+            // Быстрый путь: если весь пакет помещается в один кадр DATA и окно отправки свободно,
+            // склеиваем HEADERS + DATA(END_STREAM) в одну TLS-запись (1 пакет вместо 2).
+            if (length <= maxFrame && TryReserveSend(upSt, length))
+            {
+                byte[] dataFrame = FrameData(upId, payload, offset, length, true);
+                byte[] combined = new byte[hdrFrame.Length + dataFrame.Length];
+                global::System.Buffer.BlockCopy(hdrFrame, 0, combined, 0, hdrFrame.Length);
+                global::System.Buffer.BlockCopy(dataFrame, 0, combined, hdrFrame.Length, dataFrame.Length);
+                await WriteFramesAsync(combined);
+                return;
+            }
+
+            await WriteFramesAsync(hdrFrame);
+            int off = 0;
+            while (off < length)
+            {
+                if (_dead || IsClosed(upSt)) return;
+                int piece = Math.Min(length - off, maxFrame);
+                while (!TryReserveSend(upSt, piece))
+                {
+                    if (_dead || IsClosed(upSt)) return;
+                    await WaitWindowAsync();
+                }
+                bool endStream = (off + piece) >= length;
+                byte[] frame = FrameData(upId, payload, offset + off, piece, endStream);
+                await WriteFramesAsync(frame);
+                off += piece;
+            }
+        }
+
+        private async Task RunKeepAliveAsync(int periodSec)
+        {
+            int delayMs = Math.Max(5, periodSec) * 1000;
+            long pingSeq = 1;
+            while (!_dead)
+            {
+                await Task.Delay(delayMs);
+                if (_dead) break;
+                var f = new List<byte>(17);
+                WriteFrameHeader(f, 8, 0x6, 0x0, 0); // PING (type=0x6, flags=0x0, sid=0)
+                long v = pingSeq++;
+                for (int i = 7; i >= 0; i--) f.Add((byte)(v >> (i * 8)));
+                await WriteFramesAsync(f.ToArray());
+            }
+        }
+
+        private object UnusedPlaceholder()
+        {
+            H2Stream st = null; int id = 0, initWin = 0;
+            if (_dead && id < 0)
+            {
                 st = new H2Stream(this, id, initWin);
                 _streams[id] = st;
                 if (_reserved > 0) _reserved--;
             }
-            await WriteFramesAsync(BuildHeaders(id));
+            /* unused */
             if (_dead) { st.MarkClosed(); return null; }
             return st;
+            /* unused */
         }
 
         internal void CloseStream(H2Stream st)
@@ -494,7 +676,7 @@ namespace VlessVpnTask
                     while (newCap < _bufLen + plain.Length) newCap *= 2;
                     Array.Resize(ref _buf, newCap);
                 }
-                System.Buffer.BlockCopy(plain, 0, _buf, _bufLen, plain.Length);
+                global::System.Buffer.BlockCopy(plain, 0, _buf, _bufLen, plain.Length);
                 _bufLen += plain.Length;
             }
 
@@ -510,7 +692,7 @@ namespace VlessVpnTask
 
                 int fp = p + 9;
                 byte[] payload = new byte[len];
-                System.Buffer.BlockCopy(_buf, fp, payload, 0, len);
+                global::System.Buffer.BlockCopy(_buf, fp, payload, 0, len);
 
                 HandleFrame(type, flags, sid, payload);
                 p = fp + len;
@@ -519,7 +701,7 @@ namespace VlessVpnTask
             if (p > 0)
             {
                 _bufLen -= p;
-                if (_bufLen > 0) System.Buffer.BlockCopy(_buf, p, _buf, 0, _bufLen);
+                if (_bufLen > 0) global::System.Buffer.BlockCopy(_buf, p, _buf, 0, _bufLen);
             }
         }
 
@@ -670,7 +852,102 @@ namespace VlessVpnTask
             return o.ToArray();
         }
 
+        private byte[] BuildGetHeaders(int sid, string sessionId)
+        {
+            string reqPath;
+            List<KeyValuePair<string, string>> extraHeaders;
+            _cfg.BuildXhttpRequestMeta(sessionId, null, out reqPath, out extraHeaders);
+
+            var h = new List<byte>();
+            h.Add(0x82);                                // :method GET
+            h.Add(0x87);                                // :scheme https
+            h.Add(0x01); WriteHpackStr(h, _authority);  // :authority
+            h.Add(0x04); WriteHpackStr(h, reqPath);     // :path
+            foreach (var kv in extraHeaders)
+            {
+                h.Add(0x00);
+                WriteHpackStr(h, kv.Key.ToLowerInvariant());
+                WriteHpackStr(h, kv.Value);
+            }
+
+            var o = new List<byte>();
+            WriteFrameHeader(o, h.Count, 0x1, 0x5, sid); // HEADERS, END_HEADERS | END_STREAM (GET без тела)
+            o.AddRange(h);
+            return o.ToArray();
+        }
+
+        private byte[] BuildPostStreamHeaders(int sid, string sessionId)
+        {
+            string reqPath;
+            List<KeyValuePair<string, string>> extraHeaders;
+            if (_cfg.IsGrpc)
+            {
+                reqPath = _cfg.NormalizeGrpcPath();
+                extraHeaders = new List<KeyValuePair<string, string>>();
+            }
+            else
+            {
+                _cfg.BuildXhttpRequestMeta(sessionId, null, out reqPath, out extraHeaders);
+            }
+
+            var h = new List<byte>();
+            h.Add(0x83);                                // :method POST
+            h.Add(0x87);                                // :scheme https
+            h.Add(0x01); WriteHpackStr(h, _authority);  // :authority
+            h.Add(0x04); WriteHpackStr(h, reqPath);     // :path
+            string ct = (_cfg.IsGrpc || !_cfg.NoGrpcHeader) ? "application/grpc" : "application/octet-stream";
+            h.Add(0x00); WriteHpackStr(h, "content-type"); WriteHpackStr(h, ct);
+            if (_cfg.IsGrpc)
+            {
+                h.Add(0x00); WriteHpackStr(h, "te"); WriteHpackStr(h, "trailers");
+            }
+            foreach (var kv in extraHeaders)
+            {
+                h.Add(0x00);
+                WriteHpackStr(h, kv.Key.ToLowerInvariant());
+                WriteHpackStr(h, kv.Value);
+            }
+
+            var o = new List<byte>();
+            WriteFrameHeader(o, h.Count, 0x1, 0x4, sid); // HEADERS, END_HEADERS
+            o.AddRange(h);
+            return o.ToArray();
+        }
+
+        private byte[] BuildPostPacketHeaders(int sid, string sessionId, long seq, int contentLength)
+        {
+            string reqPath;
+            List<KeyValuePair<string, string>> extraHeaders;
+            _cfg.BuildXhttpRequestMeta(sessionId, seq, out reqPath, out extraHeaders);
+
+            var h = new List<byte>();
+            string method = string.IsNullOrEmpty(_cfg.UplinkHttpMethod) ? "POST" : _cfg.UplinkHttpMethod.Trim().ToUpperInvariant();
+            if (method == "POST") h.Add(0x83);
+            else if (method == "GET") h.Add(0x82);
+            else { h.Add(0x02); WriteHpackStr(h, method); }
+            h.Add(0x87);                                // :scheme https
+            h.Add(0x01); WriteHpackStr(h, _authority);  // :authority
+            h.Add(0x04); WriteHpackStr(h, reqPath);     // :path
+            h.Add(0x00); WriteHpackStr(h, "content-length"); WriteHpackStr(h, contentLength.ToString());
+            foreach (var kv in extraHeaders)
+            {
+                h.Add(0x00);
+                WriteHpackStr(h, kv.Key.ToLowerInvariant());
+                WriteHpackStr(h, kv.Value);
+            }
+
+            var o = new List<byte>();
+            WriteFrameHeader(o, h.Count, 0x1, 0x4, sid); // HEADERS, END_HEADERS
+            o.AddRange(h);
+            return o.ToArray();
+        }
+
         private byte[] BuildHeaders(int sid)
+        {
+            return BuildPostStreamHeaders(sid, null);
+        }
+
+        private byte[] LegacyBuildHeadersUnused(int sid)
         {
             int padMin = _cfg.XPaddingMin > 0 ? _cfg.XPaddingMin : 100;
             int padMax = _cfg.XPaddingMax > padMin ? _cfg.XPaddingMax : 1000;
@@ -691,7 +968,14 @@ namespace VlessVpnTask
             return o.ToArray();
         }
 
-        private byte[] FrameData(int sid, byte[] data, int off, int len)
+        private byte[] FrameData(int sid, byte[] data, int off, int len, bool endStream = false)
+        {
+            var o = new List<byte>(9 + len);
+            WriteFrameHeader(o, len, 0x0, (byte)(endStream ? 0x1 : 0x0), sid);
+            for (int i = 0; i < len; i++) o.Add(data[off + i]);
+            return o.ToArray();
+        }
+        private byte[] LegacyFrameDataUnused(int sid, byte[] data, int off, int len)
         {
             var o = new List<byte>(9 + len);
             WriteFrameHeader(o, len, 0x0, 0x0, sid);
@@ -790,11 +1074,14 @@ namespace VlessVpnTask
 
         private static readonly object _lock = new object();
         private static readonly List<H2MuxTransport> _pool = new List<H2MuxTransport>();
+        public static volatile bool ServerRejectedH2;
 
         public static async Task<H2Stream> AcquireStreamAsync(VlessConfig cfg)
         {
+            if (ServerRejectedH2) return null;
             for (int attempt = 0; attempt <= MaxConnsPerServer; attempt++)
             {
+                if (ServerRejectedH2) return null;
                 H2MuxTransport t = PickOrCreate(cfg);
                 if (t == null) return null;
                 if (!await t.EnsureStartedAsync()) { Remove(t); continue; }
@@ -814,7 +1101,16 @@ namespace VlessVpnTask
                 H2MuxTransport best = null; int bestLoad = int.MaxValue;
                 foreach (var t in _pool) { int l = t.Load; if (l < bestLoad) { bestLoad = l; best = t; } }
 
-                if (best != null && best.TryReserve(SoftStreamCap)) return best;
+                int softCap = (cfg != null && cfg.XmuxMaxConcurrency > 0) ? cfg.XmuxMaxConcurrency : SoftStreamCap;
+                if (best != null && best.TryReserve(softCap)) return best;
+
+                if (_pool.Count < MaxConnsPerServer)
+                {
+                    var nt = new H2MuxTransport(cfg);
+                    _pool.Add(nt);
+                    nt.TryReserve(softCap);
+                    return nt;
+                }
 
                 if (_pool.Count < MaxConnsPerServer)
                 {
@@ -833,9 +1129,124 @@ namespace VlessVpnTask
 
         public static void Reset()
         {
+            ServerRejectedH2 = false;
             List<H2MuxTransport> all;
             lock (_lock) { all = new List<H2MuxTransport>(_pool); _pool.Clear(); }
             foreach (var t in all) t.KillAll();
+        }
+    }
+
+    internal sealed class GrpcFramer
+    {
+        private readonly List<byte> _buf = new List<byte>();
+
+        public void PushData(byte[] chunk)
+        {
+            if (chunk != null && chunk.Length > 0)
+            {
+                _buf.AddRange(chunk);
+            }
+        }
+
+        public byte[] TryExtractPayload()
+        {
+            if (_buf.Count < 5) return null;
+            int msgLen = (_buf[1] << 24) | (_buf[2] << 16) | (_buf[3] << 8) | _buf[4];
+            if (msgLen < 0 || msgLen > 10 * 1024 * 1024)
+            {
+                _buf.Clear();
+                return null;
+            }
+            if (_buf.Count < 5 + msgLen) return null;
+
+            int offset = 5;
+            int end = 5 + msgLen;
+            byte[] payload = null;
+
+            while (offset < end)
+            {
+                int tagBytes;
+                int tag = ReadVarint(out tagBytes, offset, end);
+                if (tagBytes <= 0) break;
+                offset += tagBytes;
+
+                int fieldNum = tag >> 3;
+                int wireType = tag & 0x07;
+
+                if (wireType == 2)
+                {
+                    int lenBytes;
+                    int len = ReadVarint(out lenBytes, offset, end);
+                    if (lenBytes <= 0) break;
+                    offset += lenBytes;
+
+                    if (fieldNum == 1 && len >= 0 && offset + len <= end)
+                    {
+                        payload = new byte[len];
+                        _buf.CopyTo(offset, payload, 0, len);
+                    }
+                    offset += len;
+                }
+                else if (wireType == 0)
+                {
+                    int skipBytes;
+                    ReadVarint(out skipBytes, offset, end);
+                    offset += skipBytes;
+                }
+                else break;
+            }
+
+            _buf.RemoveRange(0, 5 + msgLen);
+            return payload ?? new byte[0];
+        }
+
+        private int ReadVarint(out int bytesRead, int start, int limit)
+        {
+            int res = 0;
+            int shift = 0;
+            bytesRead = 0;
+            for (int i = start; i < limit && bytesRead < 5; i++)
+            {
+                byte b = _buf[i];
+                bytesRead++;
+                res |= (b & 0x7F) << shift;
+                if ((b & 0x80) == 0) return res;
+                shift += 7;
+            }
+            return res;
+        }
+
+        public static byte[] WrapHunk(byte[] payload, int offset, int length)
+        {
+            if (payload == null || length <= 0) return new byte[0];
+            int varintLen = 1;
+            if (length >= 128)
+            {
+                if (length < 16384) varintLen = 2;
+                else if (length < 2097152) varintLen = 3;
+                else varintLen = 4;
+            }
+
+            int hunkLen = 1 + varintLen + length;
+            byte[] res = new byte[5 + hunkLen];
+            res[0] = 0x00;
+            res[1] = (byte)(hunkLen >> 24);
+            res[2] = (byte)(hunkLen >> 16);
+            res[3] = (byte)(hunkLen >> 8);
+            res[4] = (byte)hunkLen;
+
+            res[5] = 0x0A;
+            int pos = 6;
+            int temp = length;
+            while (temp >= 0x80)
+            {
+                res[pos++] = (byte)((temp & 0x7F) | 0x80);
+                temp >>= 7;
+            }
+            res[pos++] = (byte)temp;
+
+            global::System.Buffer.BlockCopy(payload, offset, res, pos, length);
+            return res;
         }
     }
 }

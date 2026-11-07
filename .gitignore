@@ -22,3 +22,5 @@ packages/
 # Выгрузки сессий разработки: в них рабочие ключи и журналы, не для публикации
 previous-session.md
 repomix-output.xml
+subscription_sample.txt
+.agents/

@@ -69,6 +69,7 @@ namespace VlessVpnTask
         // НЕ блокирует: только кладёт строку в очередь и возвращается.
         public static void W(string msg)
         {
+            if (!Verbose) return;
             if (!_started) { try { Init(); } catch { } }
             Enqueue(msg);
         }

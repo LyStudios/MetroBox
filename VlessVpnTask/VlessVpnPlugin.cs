@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.Threading.Tasks;
 using System.Collections.Generic;
@@ -11,6 +11,7 @@ using Windows.Networking.Connectivity;
 
 namespace VlessVpnTask
 {
+    public sealed partial class VlessVpnPlugin : IVpnPlugIn { }
     internal enum XhttpTransportMode { StreamOne, StreamUp, PacketUp }
     internal class VlessConfig
     {
@@ -72,11 +73,291 @@ namespace VlessVpnTask
         public string Password { get; set; } = "";
         public string SsPrefix { get; set; } = "";   // маскировка начала потока (Outline)
 
-        public string XhttpMode { get; set; } = "stream-one";
+        public string XhttpMode { get; set; } = "auto";
+        public string Extra { get; set; } = "";
+        public string Fp { get; set; } = "";
         public bool NoGrpcHeader { get; set; } = true;
         public bool NoSseHeader { get; set; } = true;
         public int XPaddingMin { get; set; } = 100;
         public int XPaddingMax { get; set; } = 1000;
+        public bool XPaddingObfsMode { get; set; } = false;
+        public string XPaddingHeader { get; set; } = "X-Padding";
+        public string XPaddingKey { get; set; } = "x_padding";
+        public string XPaddingPlacement { get; set; } = "queryInHeader";
+        public string XPaddingMethod { get; set; } = "repeat-x";
+        public string UplinkHttpMethod { get; set; } = "POST";
+        public string SessionPlacement { get; set; } = "path";
+        public string SessionKey { get; set; } = "";
+        public string SeqPlacement { get; set; } = "path";
+        public string SeqKey { get; set; } = "";
+        public int ScMaxEachPostBytes { get; set; } = 1000000;
+        public int XmuxMaxConcurrency { get; set; } = 0;
+        public int XmuxKeepAlivePeriod { get; set; } = 0;
+
+        private static readonly Random _padRng = new Random();
+        private const string Base62Chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+        // Длина символов Base62 в битах по таблице Хаффмана HPACK (RFC 7541 Appendix B).
+        // Нужна для метода tokenish: Xray-core проверяет, что байтовая длина строки
+        // после сжатия Хаффманом попадает в диапазон [xPaddingBytes.From, xPaddingBytes.To].
+        private static readonly byte[] Base62HuffmanBits = new byte[62]
+        {
+            5, 5, 5, 6, 6, 6, 6, 6, 6, 6,
+            6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 8, 7, 8,
+            5, 6, 5, 6, 5, 6, 6, 6, 5, 7, 7, 6, 6, 6, 5, 6, 7, 6, 5, 5, 6, 7, 7, 7, 7, 7
+        };
+
+        public void ParseExtra()
+        {
+            if (string.IsNullOrWhiteSpace(Extra)) return;
+            try
+            {
+                Windows.Data.Json.JsonObject root;
+                if (!Windows.Data.Json.JsonObject.TryParse(Extra, out root) || root == null)
+                    return;
+
+                ApplyExtraObject(root);
+                if (root.ContainsKey("extra"))
+                {
+                    var inner = root.GetNamedValue("extra");
+                    if (inner != null && inner.ValueType == Windows.Data.Json.JsonValueType.Object)
+                        ApplyExtraObject(inner.GetObject());
+                }
+
+                FileLog.Important(
+                    $"[XHTTP EXTRA] mode='{XhttpMode}'->{ResolveXhttpMode()}, obfs={XPaddingObfsMode}, " +
+                    $"method='{XPaddingMethod}', placement='{XPaddingPlacement}', " +
+                    $"hdr='{XPaddingHeader}', key='{XPaddingKey}', pad={XPaddingMin}-{XPaddingMax}, " +
+                    $"xmuxConc={XmuxMaxConcurrency}, keepAlive={XmuxKeepAlivePeriod}s");
+            }
+            catch (Exception ex)
+            {
+                FileLog.W($"[XHTTP EXTRA] Не удалось разобрать extra JSON: {ex.Message}");
+            }
+        }
+
+        private void ApplyExtraObject(Windows.Data.Json.JsonObject obj)
+        {
+            if (obj == null) return;
+
+            int from, to;
+            if (TryParseRange(obj, "xPaddingBytes", out from, out to) && to > 0)
+            {
+                XPaddingMin = from > 0 ? from : to;
+                XPaddingMax = to >= XPaddingMin ? to : XPaddingMin;
+            }
+
+            bool b;
+            if (TryGetBool(obj, "xPaddingObfsMode", out b)) XPaddingObfsMode = b;
+            if (TryGetBool(obj, "noGRPCHeader", out b)) NoGrpcHeader = b;
+            if (TryGetBool(obj, "noSSEHeader", out b)) NoSseHeader = b;
+
+            string s;
+            if (TryGetStr(obj, "xPaddingHeader", out s)) XPaddingHeader = s;
+            if (TryGetStr(obj, "xPaddingKey", out s)) XPaddingKey = s;
+            if (TryGetStr(obj, "xPaddingPlacement", out s)) XPaddingPlacement = s;
+            if (TryGetStr(obj, "xPaddingMethod", out s)) XPaddingMethod = s;
+            if (TryGetStr(obj, "uplinkHTTPMethod", out s)) UplinkHttpMethod = s;
+            if (TryGetStr(obj, "sessionPlacement", out s)) SessionPlacement = s;
+            if (TryGetStr(obj, "sessionKey", out s)) SessionKey = s;
+            if (TryGetStr(obj, "seqPlacement", out s)) SeqPlacement = s;
+            if (TryGetStr(obj, "seqKey", out s)) SeqKey = s;
+
+            if (TryParseRange(obj, "scMaxEachPostBytes", out from, out to) && to > 0)
+                ScMaxEachPostBytes = to;
+
+            if (obj.ContainsKey("xmux"))
+            {
+                var xmuxVal = obj.GetNamedValue("xmux");
+                if (xmuxVal != null && xmuxVal.ValueType == Windows.Data.Json.JsonValueType.Object)
+                {
+                    var xmux = xmuxVal.GetObject();
+                    if (TryParseRange(xmux, "maxConcurrency", out from, out to) && to > 0)
+                        XmuxMaxConcurrency = to;
+                    int ka, kaTo;
+                    if (TryParseRange(xmux, "hKeepAlivePeriod", out ka, out kaTo) && kaTo > 0)
+                        XmuxKeepAlivePeriod = kaTo;
+                }
+            }
+        }
+
+        private static bool TryGetStr(Windows.Data.Json.JsonObject obj, string key, out string val)
+        {
+            val = null;
+            if (obj == null || !obj.ContainsKey(key)) return false;
+            var v = obj.GetNamedValue(key);
+            if (v != null && v.ValueType == Windows.Data.Json.JsonValueType.String)
+            {
+                string s = v.GetString();
+                if (!string.IsNullOrEmpty(s)) { val = s; return true; }
+            }
+            return false;
+        }
+
+        private static bool TryGetBool(Windows.Data.Json.JsonObject obj, string key, out bool val)
+        {
+            val = false;
+            if (obj == null || !obj.ContainsKey(key)) return false;
+            var v = obj.GetNamedValue(key);
+            if (v != null && v.ValueType == Windows.Data.Json.JsonValueType.Boolean)
+            {
+                val = v.GetBoolean();
+                return true;
+            }
+            return false;
+        }
+
+        private static bool TryParseRange(Windows.Data.Json.JsonObject obj, string key, out int from, out int to)
+        {
+            from = 0; to = 0;
+            if (obj == null || !obj.ContainsKey(key)) return false;
+            var v = obj.GetNamedValue(key);
+            if (v == null) return false;
+            if (v.ValueType == Windows.Data.Json.JsonValueType.Number)
+            {
+                int n = (int)v.GetNumber();
+                from = n; to = n;
+                return true;
+            }
+            if (v.ValueType == Windows.Data.Json.JsonValueType.String)
+            {
+                string s = (v.GetString() ?? "").Trim();
+                int dash = s.IndexOf('-');
+                if (dash > 0)
+                {
+                    int a, b;
+                    if (int.TryParse(s.Substring(0, dash).Trim(), out a) &&
+                        int.TryParse(s.Substring(dash + 1).Trim(), out b))
+                    {
+                        from = a; to = b;
+                        return true;
+                    }
+                }
+                int single;
+                if (int.TryParse(s, out single))
+                {
+                    from = single; to = single;
+                    return true;
+                }
+            }
+            if (v.ValueType == Windows.Data.Json.JsonValueType.Object)
+            {
+                var ro = v.GetObject();
+                if (ro.ContainsKey("from") && ro.GetNamedValue("from").ValueType == Windows.Data.Json.JsonValueType.Number)
+                    from = (int)ro.GetNamedValue("from").GetNumber();
+                if (ro.ContainsKey("to") && ro.GetNamedValue("to").ValueType == Windows.Data.Json.JsonValueType.Number)
+                    to = (int)ro.GetNamedValue("to").GetNumber();
+                if (to == 0 && from > 0) to = from;
+                if (from == 0 && to > 0) from = to;
+                return to > 0;
+            }
+            return false;
+        }
+
+        public string NormalizeXhttpBasePath()
+        {
+            string p = string.IsNullOrEmpty(Path) ? "/" : Path.Trim();
+            int q = p.IndexOf('?');
+            if (q >= 0) p = p.Substring(0, q);
+            if (!p.StartsWith("/")) p = "/" + p;
+            if (!p.EndsWith("/")) p += "/";
+            return p;
+        }
+
+        public string GenerateXPadding()
+        {
+            int min = XPaddingMin > 0 ? XPaddingMin : 100;
+            int max = XPaddingMax >= min ? XPaddingMax : Math.Max(min, 1000);
+            int targetLen;
+            bool tokenish = string.Equals((XPaddingMethod ?? "").Trim(), "tokenish", StringComparison.OrdinalIgnoreCase);
+
+            lock (_padRng)
+            {
+                targetLen = _padRng.Next(min, max + 1);
+                if (!tokenish)
+                    return new string('X', targetLen);
+
+                var sb = new System.Text.StringBuilder((int)(targetLen * 1.4) + 8);
+                int totalBits = 0;
+                while ((totalBits + 7) / 8 < targetLen)
+                {
+                    int idx = _padRng.Next(62);
+                    sb.Append(Base62Chars[idx]);
+                    totalBits += Base62HuffmanBits[idx];
+                }
+                return sb.ToString();
+            }
+        }
+
+        public void BuildXhttpRequestMeta(
+            string sessionId,
+            long? seq,
+            out string pathAndQuery,
+            out List<KeyValuePair<string, string>> extraHeaders)
+        {
+            string basePath = NormalizeXhttpBasePath();
+            string p = basePath;
+            var queries = new List<string>();
+            var cookies = new List<string>();
+            extraHeaders = new List<KeyValuePair<string, string>>();
+
+            bool sessionInPath = false;
+            if (!string.IsNullOrEmpty(sessionId))
+            {
+                string sp = (SessionPlacement ?? "path").Trim().ToLowerInvariant();
+                string sk = !string.IsNullOrEmpty(SessionKey)
+                    ? SessionKey
+                    : (!XPaddingObfsMode ? "x_session" : (!string.IsNullOrEmpty(XPaddingKey) ? XPaddingKey : "x_session"));
+                if (sp == "query") queries.Add(sk + "=" + sessionId);
+                else if (sp == "header") extraHeaders.Add(new KeyValuePair<string, string>(sk, sessionId));
+                else if (sp == "cookie") cookies.Add(sk + "=" + sessionId);
+                else
+                {
+                    p += sessionId;
+                    sessionInPath = true;
+                }
+            }
+
+            if (seq.HasValue)
+            {
+                string qp = (SeqPlacement ?? "path").Trim().ToLowerInvariant();
+                string qk = !string.IsNullOrEmpty(SeqKey)
+                    ? SeqKey
+                    : (!XPaddingObfsMode ? "x_seq" : (!string.IsNullOrEmpty(XPaddingKey) ? XPaddingKey : "x_seq"));
+                if (qp == "query") queries.Add(qk + "=" + seq.Value);
+                else if (qp == "header") extraHeaders.Add(new KeyValuePair<string, string>(qk, seq.Value.ToString()));
+                else if (qp == "cookie") cookies.Add(qk + "=" + seq.Value);
+                else
+                {
+                    if (sessionInPath) p += "/" + seq.Value;
+                    else p += seq.Value.ToString();
+                }
+            }
+
+            string pad = GenerateXPadding();
+            string host = !string.IsNullOrEmpty(Host) ? Host : (!string.IsNullOrEmpty(Sni) ? Sni : Address);
+            if (!XPaddingObfsMode)
+            {
+                extraHeaders.Add(new KeyValuePair<string, string>("Referer", $"https://{host}{basePath}?x_padding={pad}"));
+            }
+            else
+            {
+                string pp = (XPaddingPlacement ?? "queryInHeader").Trim().ToLowerInvariant();
+                string pk = !string.IsNullOrEmpty(XPaddingKey) ? XPaddingKey : "x_padding";
+                string ph = !string.IsNullOrEmpty(XPaddingHeader) ? XPaddingHeader : "X-Padding";
+
+                if (pp == "cookie") cookies.Add(pk + "=" + pad);
+                else if (pp == "header") extraHeaders.Add(new KeyValuePair<string, string>(ph, pad));
+                else if (pp == "query") queries.Add(pk + "=" + pad);
+                else extraHeaders.Add(new KeyValuePair<string, string>(ph, $"https://{host}{basePath}?{pk}={pad}"));
+            }
+
+            if (cookies.Count > 0)
+                extraHeaders.Add(new KeyValuePair<string, string>("Cookie", string.Join("; ", cookies)));
+
+            pathAndQuery = queries.Count > 0
+                ? (p + (p.IndexOf('?') >= 0 ? "&" : "?") + string.Join("&", queries))
+                : p;
+        }
 
         public XhttpTransportMode ResolveXhttpMode()
         {
@@ -89,12 +370,22 @@ namespace VlessVpnTask
                 case "stream-up":
                 case "streamup":
                     return XhttpTransportMode.StreamUp;
-                default:
+                case "stream-one":
                     // auto/пусто/stream-one -> stream-one. В отличие от senko здесь
                     // НЕ выбираем packet-up для security=none: split-транспорт
                     // (XhttpSplit) в Metrobox всегда идёт через Reality, а stream-one
                     // корректно шлёт cleartext при security=none.
+                case "streamone":
                     return XhttpTransportMode.StreamOne;
+                case "auto":
+                case "":
+                default:
+                    // В Xray-core для mode=auto:
+                    //   по умолчанию выбирается packet-up (совместим с CDN и reverse-proxy вроде Caddy/Nginx,
+                    //   которые буферизуют тело POST до его завершения и вешают stream-one),
+                    //   и только для REALITY без отдельных downloadSettings выбирается stream-one.
+                    bool isReality = string.Equals((Security ?? "").Trim(), "reality", StringComparison.OrdinalIgnoreCase);
+                    return isReality ? XhttpTransportMode.StreamOne : XhttpTransportMode.PacketUp;
             }
         }
 
@@ -114,9 +405,25 @@ namespace VlessVpnTask
 
         // xtls-rprx-vision активен только для своего flow и только на raw TCP
         // (не ws/xhttp), как и в xray-core.
+        public bool IsGrpc =>
+            string.Equals(Type, "grpc", StringComparison.OrdinalIgnoreCase);
+
         public bool IsVision =>
             string.Equals((Flow ?? "").Trim(), "xtls-rprx-vision", StringComparison.OrdinalIgnoreCase)
-            && !IsWs && !IsXhttp;
+            && !IsWs && !IsXhttp && !IsGrpc;
+
+        public string NormalizeGrpcPath()
+        {
+            string p = string.IsNullOrEmpty(Path) ? "" : Path.Trim();
+            if (string.IsNullOrEmpty(p)) return "/Tun";
+            if (p.StartsWith("/"))
+            {
+                if (p.EndsWith("/Tun", StringComparison.OrdinalIgnoreCase) || p.EndsWith("/TunMulti", StringComparison.OrdinalIgnoreCase))
+                    return p;
+                return p.TrimEnd('/') + "/Tun";
+            }
+            return "/" + p + "/Tun";
+        }
 
         public string EffectiveXhttpMode
         {
@@ -124,7 +431,9 @@ namespace VlessVpnTask
             {
                 string m = (XhttpMode ?? "").Trim().ToLowerInvariant();
                 if (m == "" || m == "auto")
-                    return "stream-one";
+                    return ResolveXhttpMode() == XhttpTransportMode.PacketUp ? "packet-up"
+                         : ResolveXhttpMode() == XhttpTransportMode.StreamUp ? "stream-up"
+                         : "stream-one";
                 return m;
             }
         }
@@ -167,7 +476,7 @@ namespace VlessVpnTask
         }
     }
 
-    public sealed class VlessVpnPlugin : IVpnPlugIn
+    public sealed partial class VlessVpnPlugin : IVpnPlugIn
     {
         private readonly System.Threading.SemaphoreSlim _triggerWriteLock = new System.Threading.SemaphoreSlim(1, 1);
         private VpnChannel _channel;
@@ -273,7 +582,9 @@ namespace VlessVpnTask
                     Host = localSettings.Values["v_Host"] as string,
                     Flow = localSettings.Values["v_Flow"] as string,
                     Alpn = localSettings.Values["v_Alpn"] as string,
-                    XhttpMode = (localSettings.Values["v_XhttpMode"] as string) ?? "stream-one",
+                    XhttpMode = (localSettings.Values["v_XhttpMode"] as string) ?? "auto",
+                    Extra = (localSettings.Values["v_Extra"] as string) ?? "",
+                    Fp = (localSettings.Values["v_Fp"] as string) ?? "",
                     Method = (localSettings.Values["v_SsMethod"] as string) ?? "",
                     Password = (localSettings.Values["v_SsPassword"] as string) ?? "",
                     SsPrefix = (localSettings.Values["v_SsPrefix"] as string) ?? "",
@@ -307,7 +618,8 @@ namespace VlessVpnTask
                     throw new Exception($"Шифр Shadowsocks '{_config.Method}' не поддерживается. " +
                                         "Нужен aes-128-gcm, aes-192-gcm, aes-256-gcm или chacha20-ietf-poly1305.");
 
-                FileLog.Important($"[VPN PLUGIN] Type='{_config.Type}', IsXhttp={_config.IsXhttp}, Path='{_config.Path}'");
+                _config.ParseExtra();
+                FileLog.Important($"[VPN PLUGIN] Type='{_config.Type}', IsXhttp={_config.IsXhttp}, Mode='{_config.EffectiveXhttpMode}', Path='{_config.Path}'");
                 // Резолвим ДО подъёма TUN и с повторами: сразу после переключения сети
                 // (особенно на только что поднятом Wi-Fi) DNS часто ещё не готов, а одной
                 // попытки с таймаутом 5 с не хватало. Если ServerIp останется пустым, дальше
@@ -353,7 +665,8 @@ namespace VlessVpnTask
                         // подключение там, где DNS ещё не проснулся.
                         string cachedIp = null;
                         try { cachedIp = localSettings.Values[LastServerIpKey] as string; } catch { }
-                        if (!string.IsNullOrEmpty(cachedIp) && !IsTunnelFakeIp(cachedIp))
+                        if (!string.IsNullOrEmpty(cachedIp) && !IsTunnelFakeIp(cachedIp) &&
+                            string.Equals(knownFor, _config.Address, StringComparison.OrdinalIgnoreCase))
                         {
                             ServerIp = cachedIp;
                             FileLog.Important($"[VPN PLUGIN] DNS не ответил — беру последний известный IP сервера: {ServerIp}");
@@ -422,7 +735,7 @@ namespace VlessVpnTask
                 // vision несовместим с MUX (xray запрещает mux при xtls-rprx-vision),
                 // поэтому vision-профили тоже работают в per-flow DIRECT-режиме.
                 // Shadowsocks мультиплексора не имеет вовсе — только per-flow соединения.
-                bool direct = _config.IsXhttp || _config.IsWs || _config.IsVision || _config.IsShadowsocks;
+                bool direct = _config.IsXhttp || _config.IsWs || _config.IsVision || _config.IsShadowsocks || _config.IsGrpc;
 
                 FileLog.Important($"[VPN PLUGIN] Выбран режим: {(direct ? "DIRECT (shadowsocks/xhttp/ws/vision без mux)" : "MUX")}");
 
@@ -801,6 +1114,8 @@ namespace VlessVpnTask
                 catch { }
 
                 string proto = _config == null ? "" :
+                               _config.IsGrpc ? "grpc" :
+
                                _config.IsShadowsocks ? "shadowsocks" :
                                (_config.Type ?? "").ToLowerInvariant() == "amneziawg" ? "amneziawg" :
                                (_config.Type ?? "").ToLowerInvariant() == "wireguard" ? "wireguard" :
@@ -926,11 +1241,12 @@ namespace VlessVpnTask
         // начала, и гасить такой туннель было бы ошибкой.
 
         private const string AppAliveLockName = "app.alive";
-        private const int AppWatchPeriodMs = 2000;
+        private const int AppWatchPeriodMs = 5000;
 
         private System.Threading.Timer _appWatch;
         private int _appWatchBusy;
         private bool _appSeenAlive;
+        private DateTime _appWatchStartedAt = DateTime.UtcNow;
 
         private enum AppPresence { Alive, Gone, Unknown }
 
@@ -962,6 +1278,7 @@ namespace VlessVpnTask
         {
             StopAppWatch();
             _appSeenAlive = false;
+            _appWatchStartedAt = DateTime.UtcNow;
             try
             {
                 _appWatch = new System.Threading.Timer(_ => AppWatchTick(), null, 0, AppWatchPeriodMs);
@@ -993,12 +1310,22 @@ namespace VlessVpnTask
                     return;
                 }
 
-                if (state == AppPresence.Gone && _appSeenAlive)
+                if (state == AppPresence.Gone)
                 {
-                    FileLog.Important("[APP WATCH] Приложение закрыто — отключаю туннель.");
-                    StopAppWatch();
-                    try { Disconnect(_channel); }
-                    catch (Exception ex) { FileLog.Important($"[APP WATCH] Отключение не удалось: {ex.Message}"); }
+                    if (_appSeenAlive)
+                    {
+                        FileLog.Important("[APP WATCH] Приложение закрыто — отключаю туннель.");
+                        StopAppWatch();
+                        try { Disconnect(_channel); }
+                        catch (Exception ex) { FileLog.Important($"[APP WATCH] Отключение не удалось: {ex.Message}"); }
+                    }
+                    else if ((DateTime.UtcNow - _appWatchStartedAt).TotalSeconds >= 30)
+                    {
+                        FileLog.Important("[APP WATCH] Приложение не запущено в течение 30 секунд — отключаю туннель.");
+                        StopAppWatch();
+                        try { Disconnect(_channel); }
+                        catch (Exception ex) { FileLog.Important($"[APP WATCH] Отключение не удалось: {ex.Message}"); }
+                    }
                 }
             }
             finally
@@ -1076,7 +1403,7 @@ namespace VlessVpnTask
 
                 // Одна неудача бывает и на живом туннеле (сервер придушил соединение,
                 // сеть моргнула). Пересобираем на второй подряд.
-                if (_probeFails >= 2)
+                if (_probeFails >= 4)
                 {
                     FileLog.Important("[WATCHDOG] Пересоздаю соединения, не дожидаясь пользователя.");
                     try { H2MuxRegistry.Reset(); } catch { }
@@ -1196,13 +1523,25 @@ namespace VlessVpnTask
                 {
                     ServerIp = ip;
                     FileLog.Important($"[NET] IP сервера разрешён после смены сети: {ServerIp}");
-                    try { ApplicationData.Current.LocalSettings.Values[LastServerIpKey] = ServerIp; } catch { }
+                    try
+                    {
+                        ApplicationData.Current.LocalSettings.Values[LastServerIpKey] = ServerIp;
+                        ApplicationData.Current.LocalSettings.Values[LastServerHostKey] = _config.Address;
+                    }
+                    catch { }
                 }
                 else
                 {
                     string cachedIp = null;
-                    try { cachedIp = ApplicationData.Current.LocalSettings.Values[LastServerIpKey] as string; } catch { }
-                    if (!string.IsNullOrEmpty(cachedIp) && !IsTunnelFakeIp(cachedIp))
+                    string cachedFor = null;
+                    try
+                    {
+                        cachedIp = ApplicationData.Current.LocalSettings.Values[LastServerIpKey] as string;
+                        cachedFor = ApplicationData.Current.LocalSettings.Values[LastServerHostKey] as string;
+                    }
+                    catch { }
+                    if (!string.IsNullOrEmpty(cachedIp) && !IsTunnelFakeIp(cachedIp) &&
+                        string.Equals(cachedFor, _config.Address, StringComparison.OrdinalIgnoreCase))
                     {
                         ServerIp = cachedIp;
                         FileLog.Important($"[NET] Беру последний известный IP сервера: {ServerIp}");

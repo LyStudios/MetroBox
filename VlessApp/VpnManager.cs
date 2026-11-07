@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.Threading.Tasks;
 using Windows.Networking.Vpn;
@@ -94,7 +94,9 @@ namespace VlessApp
             s["v_Host"] = p.Host ?? "";
             s["v_Flow"] = p.Flow ?? "";
             s["v_Alpn"] = p.Alpn ?? "";
-            s["v_XhttpMode"] = p.Mode ?? "stream-one";
+            s["v_XhttpMode"] = string.IsNullOrEmpty(p.Mode) ? "auto" : p.Mode;
+            s["v_Extra"] = p.Extra ?? "";
+            s["v_Fp"] = p.Fp ?? "";
             // Второе звено цепочки Amnezia: реле доводит только до этого узла,
             // а он проверяет уже свои ключи REALITY — поэтому нужны все параметры,
             // а не только адрес.

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -535,10 +535,12 @@ namespace VlessVpnTask
 
         private byte[] BuildAlpnList()
         {
-            byte[] protos = OfferH1Only
-                ? new byte[] { 8, (byte)'h', (byte)'t', (byte)'t', (byte)'p', (byte)'/', (byte)'1', (byte)'.', (byte)'1' }
-                : new byte[] { 2, (byte)'h',(byte)'2',
-                               8, (byte)'h',(byte)'t',(byte)'t',(byte)'p',(byte)'/',(byte)'1',(byte)'.',(byte)'1' };
+            byte[] protos = (_cfg != null && _cfg.IsGrpc)
+                ? new byte[] { 2, (byte)'h', (byte)'2' }
+                : (OfferH1Only
+                    ? new byte[] { 8, (byte)'h', (byte)'t', (byte)'t', (byte)'p', (byte)'/', (byte)'1', (byte)'.', (byte)'1' }
+                    : new byte[] { 2, (byte)'h',(byte)'2',
+                                   8, (byte)'h',(byte)'t',(byte)'t',(byte)'p',(byte)'/',(byte)'1',(byte)'.',(byte)'1' });
             byte[] list = new byte[protos.Length + 2];
             list[0] = (byte)(protos.Length >> 8);
             list[1] = (byte)(protos.Length & 0xFF);
@@ -708,6 +710,8 @@ namespace VlessVpnTask
 
                     FileLog.W($"[REALITY TLS 1.3] Расшифровано Handshake-сообщение. Тип: {hsType}, Длина: {hsLen} байт");
 
+                    if (hsType == 8) // EncryptedExtensions (RFC 8446: ALPN в TLS 1.3 передаётся здесь, а не в ServerHello)
+                        ParseEncryptedExtensions(hsMsg);
                     if (hsType == 11) // Certificate
                     {
                         InspectServerCertificate(hsMsg);
@@ -1294,6 +1298,32 @@ namespace VlessVpnTask
 
             return serverShare;
         }
+        private void ParseEncryptedExtensions(byte[] hs)
+        {
+            if (hs == null || hs.Length < 6 || hs[0] != 8) return;
+            int extTotal = (hs[4] << 8) | hs[5];
+            int pos = 6;
+            int end = Math.Min(hs.Length, pos + extTotal);
+            while (pos + 4 <= end)
+            {
+                int type = (hs[pos] << 8) | hs[pos + 1];
+                int len = (hs[pos + 2] << 8) | hs[pos + 3];
+                pos += 4;
+                if (type == 0x0010 && len >= 3 && pos + 3 <= end) // ALPN
+                {
+                    int nameLen = hs[pos + 2];
+                    if (nameLen > 0 && pos + 3 + nameLen <= end)
+                    {
+                        NegotiatedAlpn = Encoding.ASCII.GetString(hs, pos + 3, nameLen);
+                        FileLog.Important($"[TLS 1.3] Сервер выбрал ALPN (EncryptedExtensions): '{NegotiatedAlpn}'");
+                    }
+                }
+                pos += len;
+            }
+        }
+        private void UnusedBraceClose()
+        {
+        }
 
         private bool VerifyServerFinished(byte[] finishedHs)
         {
@@ -1333,7 +1363,7 @@ namespace VlessVpnTask
         }
     }
 
-    internal class VlessConnection : IDirectConn
+    internal partial class VlessConnection : IDirectConn
     {
         public StreamSocket Socket { get; private set; }
         private DataWriter _writer;
@@ -1567,10 +1597,20 @@ namespace VlessVpnTask
                 if (_cfg.IsXhttp && _directMode)
                 {
                     var xmode = _cfg.ResolveXhttpMode();
+                    bool configForbidsH2 = !string.IsNullOrEmpty(_cfg.Alpn) &&
+                                           _cfg.Alpn.IndexOf("h2", StringComparison.OrdinalIgnoreCase) < 0;
+                    if (UseH2Mux && !configForbidsH2 && !H2MuxRegistry.ServerRejectedH2)
+                    {
+                        if (await StartH2MuxAsync()) return true;
+                        if (!H2MuxRegistry.ServerRejectedH2) return false;
+                    }
                     if (xmode == XhttpTransportMode.PacketUp) return await StartSplitAsync(true);
                     if (xmode == XhttpTransportMode.StreamUp) return await StartSplitAsync(false);
                     // stream-one — проваливаемся в обычный путь ниже
                 }
+
+                if (_cfg.IsGrpc && _directMode)
+                    return await StartH2MuxAsync();
 
                 // Вариант B: xhttp stream-one direct → мультиплексируем через общий
                 // Reality+H2 туннель вместо собственного сокета/хендшейка на этот flow.
@@ -1866,7 +1906,8 @@ namespace VlessVpnTask
                     return false;
                 }
                 _muxEnabled = true;
-                FileLog.Important($"[H2MUX] xhttp stream-one через общий туннель, H2 sid={_muxStream.Id}.");
+                FileLog.Important($"[H2MUX] {(_cfg.IsGrpc ? "grpc" : "xhttp " + _cfg.EffectiveXhttpMode)} через общий туннель, H2 sid={_muxStream.Id}" +
+                                  (string.IsNullOrEmpty(_muxStream.SessionId) ? "." : $", session={_muxStream.SessionId}."));
                 return true;
             }
             catch (Exception ex)

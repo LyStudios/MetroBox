@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
@@ -82,6 +82,8 @@ namespace VlessApp
         [DataMember] public string TelegramUrl { get; set; } = "";
 
         [DataMember] public string Mode { get; set; } = "";
+        [DataMember] public string Extra { get; set; } = "";
+        [DataMember] public string Fp { get; set; } = "";
 
         // Полный текст .conf для профилей AmneziaWG/WireGuard (Type = "amneziawg").
         [DataMember] public string AwgConfig { get; set; } = "";
@@ -185,9 +187,9 @@ namespace VlessApp
         private static readonly Brush PingFastBrush = new SolidColorBrush(Color.FromArgb(255, 16, 185, 129));
         private static readonly Brush PingMediumBrush = new SolidColorBrush(Color.FromArgb(255, 245, 158, 11));
         private static readonly Brush PingSlowBrush = new SolidColorBrush(Color.FromArgb(255, 239, 68, 68));
-        private static readonly Brush PingIdleBrush = new SolidColorBrush(Color.FromArgb(255, 156, 163, 175));
-        private static readonly Brush RowSelectedBrush = new SolidColorBrush(Color.FromArgb(255, 30, 41, 73));
-        private static readonly Brush RowNormalBrush = new SolidColorBrush(Color.FromArgb(255, 18, 24, 45));
+        private static readonly Brush PingIdleBrush = new SolidColorBrush(Color.FromArgb(255, 148, 163, 184));
+        private static readonly Brush RowSelectedBrush = new SolidColorBrush(Color.FromArgb(255, 26, 36, 62));
+        private static readonly Brush RowNormalBrush = new SolidColorBrush(Color.FromArgb(255, 14, 20, 36));
 
         // Цвет по величине задержки. Раньше любой результат красился зелёным,
         // включая 5689 мс и «Таймаут», — то есть цвет не значил ничего.
@@ -318,7 +320,7 @@ namespace VlessApp
         // в ветку raw TCP и не поднималось — снаружи это «сервер не отвечает».
         private static readonly HashSet<string> SupportedVlessTypes =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        { "tcp", "raw", "ws", "websocket", "xhttp", "splithttp" };
+        { "tcp", "raw", "ws", "websocket", "xhttp", "splithttp", "grpc" };
 
         public static string WhyUnsupportedScheme(string scheme)
         {
@@ -333,8 +335,6 @@ namespace VlessApp
             if (p == null || p.IsShadowsocks || p.IsAmneziaWg) return null;
             string t = (p.Type ?? "tcp").Trim();
             if (SupportedVlessTypes.Contains(t)) return null;
-            if (string.Equals(t, "grpc", StringComparison.OrdinalIgnoreCase))
-                return "транспорт gRPC не реализован";
             if (string.Equals(t, "httpupgrade", StringComparison.OrdinalIgnoreCase))
                 return "транспорт HTTPUpgrade не реализован (близок к ws, но это другой хендшейк)";
             if (string.Equals(t, "h2", StringComparison.OrdinalIgnoreCase) ||
@@ -359,10 +359,11 @@ namespace VlessApp
             string type = (p.Type ?? "tcp").Trim().ToLowerInvariant();
             bool ws = type == "ws" || type == "websocket";
             bool xhttp = type == "xhttp" || type == "splithttp";
+            bool grpc = type == "grpc";
             if (sec == "reality") return null;
             if (sec == "tls")
-                return (ws || xhttp) ? null
-                    : "обычный TLS реализован для WebSocket и XHTTP, а здесь транспорт «" + type + "» — нужен REALITY";
+                return (ws || xhttp || grpc) ? null
+                    : "обычный TLS реализован для WebSocket, XHTTP и gRPC, а здесь транспорт «" + type + "» — нужен REALITY";
             if (sec == "xtls")
                 return "XTLS (старый, до xtls-rprx-vision) не реализован";
             if (sec.Length == 0 || sec == "none")
@@ -387,6 +388,8 @@ namespace VlessApp
                 if (!string.IsNullOrEmpty(p.Path)) sb.Append(" path=").Append(p.Path);
                 if (!string.IsNullOrEmpty(p.Alpn)) sb.Append(" alpn=").Append(p.Alpn);
                 if (!string.IsNullOrEmpty(p.Mode)) sb.Append(" mode=").Append(p.Mode);
+                if (!string.IsNullOrEmpty(p.Fp)) sb.Append(" fp=").Append(p.Fp);
+                if (!string.IsNullOrEmpty(p.Extra)) sb.Append(" extra=").Append(p.Extra.Length).Append("b");
                 if (!string.IsNullOrEmpty(p.PublicKey)) sb.Append(" pbk=").Append(AppLog.Mask(p.PublicKey));
             }
             sb.Append(" | ").Append(p.Address ?? "?").Append(':').Append(p.Port);
@@ -504,9 +507,18 @@ namespace VlessApp
                             case "shortid": profile.ShortId = val; break;
                             case "flow": profile.Flow = val; break;
                             case "path": profile.Path = val; break;
+                            case "servicename":
+                            case "service_name":
+                                if (string.IsNullOrEmpty(profile.Path)) profile.Path = val;
+                                break;
+                            case "authority":
                             case "host": profile.Host = val; break;
                             case "alpn": profile.Alpn = val; break;
                             case "mode": profile.Mode = val; break;
+                            case "extra": profile.Extra = val; break;
+                            case "fp":
+                            case "fingerprint": profile.Fp = val; break;
+                            case "encryption": break;
                             case "pbk":
                             case "publickey":
                                 val = val.Replace("-", "+").Replace("_", "/");
@@ -1655,6 +1667,8 @@ namespace VlessApp
                         profile.Path = GetJsonString(xhttp, "path");
                         profile.Host = GetJsonString(xhttp, "host");
                         profile.Mode = GetJsonString(xhttp, "mode");
+                        var extraObj = GetJsonObject(xhttp, "extra");
+                        profile.Extra = (extraObj ?? xhttp).Stringify();
                     }
 
                     var reality = GetJsonObject(ss, "realitySettings");

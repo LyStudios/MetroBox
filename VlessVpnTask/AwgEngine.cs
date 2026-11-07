@@ -108,12 +108,16 @@ namespace VlessVpnTask
                     if (!_stopped && Volatile.Read(ref _osRxCount) > 0)
                     {
                         try { TriggerDecapsulate?.Invoke(); } catch { }
+                        if (Volatile.Read(ref _osRxCount) > 0)
+                        {
+                            try { _drainTimer?.Change(100, Timeout.Infinite); } catch { }
+                        }
                     }
-                }, null, 100, 100);
+                }, null, Timeout.Infinite, Timeout.Infinite);
 
-                _statsTimer = new Timer(_ => LogRates(), null, 10000, 10000);
+                _statsTimer = new Timer(_ => LogRates(), null, 30000, 30000);
 
-                _rekeyTimer = new Timer(_ => { var _ignore = RekeyIfNeededAsync(); }, null, 15000, 15000);
+                _rekeyTimer = new Timer(_ => { var _ignore = RekeyIfNeededAsync(); }, null, 30000, 30000);
                 if (_cfg.PersistentKeepalive > 0)
                 {
                     int ms = _cfg.PersistentKeepalive * 1000;
@@ -375,11 +379,15 @@ namespace VlessVpnTask
                     return;
                 }
                 OsRxQueue.Enqueue(plain);
-                Interlocked.Increment(ref _osRxCount);
+                int count = Interlocked.Increment(ref _osRxCount);
                 Interlocked.Increment(ref _rxPackets);
                 Interlocked.Add(ref _rxBytes, plain.Length);
 
                 if (Interlocked.Exchange(ref _triggerPending, 1) == 0) KickDecapsulate();
+                if (count == 1)
+                {
+                    try { _drainTimer?.Change(100, Timeout.Infinite); } catch { }
+                }
             }
             catch (Exception ex) { FileLog.W($"[AWG] Ошибка приёма: {ex.Message}"); }
         }
@@ -434,6 +442,7 @@ namespace VlessVpnTask
             try
             {
                 long txB = Volatile.Read(ref _txBytes), rxB = Volatile.Read(ref _rxBytes);
+                if (txB == _prevTxBytes && rxB == _prevRxBytes) return;
                 long calls = Volatile.Read(ref _sendCalls), ticks = Volatile.Read(ref _sendTicks);
 
                 double txMbit = (txB - _prevTxBytes) * 8.0 / 10.0 / 1e6;

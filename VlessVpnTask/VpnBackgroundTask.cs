@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
@@ -122,7 +122,8 @@ namespace VlessVpnTask
                 // Пока процесс дозакрывался, система пришла с новым подключением — в тот
                 // же процесс. Выход сейчас убил бы свежий туннель на середине подъёма.
                 // Туннель закрыли приложением и сразу открыли снова — ровно так и бывает.
-                if (System.Threading.Volatile.Read(ref VlessVpnPlugin.ConnectGeneration) != generation)
+                if (System.Threading.Volatile.Read(ref VlessVpnPlugin.ConnectGeneration) != generation ||
+                    !ReferenceEquals(deferral, _deferral))
                 {
                     try { FileLog.Important("[BG TASK] TearDown отменён: пока процесс закрывался, пришло новое подключение."); } catch { }
 

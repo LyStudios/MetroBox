@@ -9,7 +9,9 @@ using Windows.Networking.Sockets;
 using Windows.Storage.Streams;
 
 namespace VlessVpnTask
-{
+{
+    internal sealed partial class XhttpSplit { }
+
     // Reality-обёрнутый H1-сокет для xhttp split-режимов. Отдельный от VlessConnection,
     // чтобы не задевать рабочие mux/tcp/stream-one пути. Пишет/читает прикладные (расшифрованные)
     // байты. Конкурентного read+write на одном канале НЕТ (сериализуем на уровне выше).

@@ -326,9 +326,13 @@ namespace VlessVpnTask
                 if (Volatile.Read(ref _osRxCount) > 0)
                 {
                     try { TriggerDecapsulate?.Invoke(); } catch { }
+                    if (Volatile.Read(ref _osRxCount) > 0)
+                    {
+                        try { _drainTimer?.Change(100, Timeout.Infinite); } catch { }
+                    }
                 }
-            }, null, 100, 100);
-            _reaperTimer = new System.Threading.Timer(_ => ReapIdle(), null, 5000, 5000);
+            }, null, Timeout.Infinite, Timeout.Infinite);
+            _reaperTimer = new System.Threading.Timer(_ => ReapIdle(), null, 15000, 15000);
         }
 
 
@@ -377,10 +381,16 @@ namespace VlessVpnTask
         {
             if (_stopped) return;
 
-            FileLog.Important(
-                $"[POOL] slots={_tcpSlots.CurrentCount}/{MaxTcpStreams} " +
-                $"carriers={_carriers.Count} conns={_conns.Count} mux={_muxSessions.Count} " +
-                $"osrx={Volatile.Read(ref _osRxCount)} dropped={Volatile.Read(ref _osRxDropped)}");
+            if (_conns.Count > 0 || _carriers.Count > 0)
+            {
+                if (FileLog.Verbose)
+                {
+                    FileLog.W(
+                        $"[POOL] slots={_tcpSlots.CurrentCount}/{MaxTcpStreams} " +
+                        $"carriers={_carriers.Count} conns={_conns.Count} mux={_muxSessions.Count} " +
+                        $"osrx={Volatile.Read(ref _osRxCount)} dropped={Volatile.Read(ref _osRxDropped)}");
+                }
+            }
 
             DateTime now = DateTime.UtcNow;
             foreach (var kv in _conns)
@@ -399,13 +409,18 @@ namespace VlessVpnTask
             }
         }
 
+        [ThreadStatic] private static byte[] _osRxScratch;
+
         public bool ProcessPacketFromOs(VpnPacketBuffer vpnBuffer)
         {
             try
             {
-                byte[] buf = vpnBuffer.Buffer.ToArray();
-                int length = buf.Length;
-                if (length < 20) { FileLog.W($"[PKT] Слишком короткий: {length}б"); return false; }
+                int length = (int)vpnBuffer.Buffer.Length;
+                if (length < 20) return false;
+
+                byte[] buf = _osRxScratch ?? (_osRxScratch = new byte[2048]);
+                if (buf.Length < length) buf = _osRxScratch = new byte[Math.Max(length, 2048)];
+                WindowsRuntimeBufferExtensions.CopyTo(vpnBuffer.Buffer, 0, buf, 0, length);
 
                 byte version = (byte)(buf[0] >> 4);
                 byte proto = (version == 4) ? buf[9] : (version == 6 ? buf[6] : (byte)0);
@@ -892,7 +907,7 @@ public void SignalStop()
             _ = Task.Run(() => MuxReadLoopAsync(carrier));
 
             _muxKeepAlive = new System.Threading.Timer(
-                _ => { _ = SendMuxKeepAliveAsync(); }, null, 3000, 3000);
+                _ => { _ = SendMuxKeepAliveAsync(); }, null, 25000, 25000);
 
             FileLog.Important("[TCP STACK] MUX (канал #1) установлен ДО старта TUN.");
         }
@@ -1565,7 +1580,7 @@ public void SignalStop()
                 }
 
                 OsRxQueue.Enqueue(rawPacket);
-                Interlocked.Increment(ref _osRxCount);
+                int count = Interlocked.Increment(ref _osRxCount);
 
                 if (trigger)
                 {
@@ -1575,6 +1590,10 @@ public void SignalStop()
                     {
                         try { TriggerDecapsulate?.Invoke(); } catch { }
                     }
+                }
+                if (count == 1)
+                {
+                    try { _drainTimer?.Change(100, Timeout.Infinite); } catch { }
                 }
             }
             catch (Exception ex)
