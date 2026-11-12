@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -81,7 +81,6 @@ namespace VlessApp
             // Журнал начинается заново на каждый запуск: его отправляют целиком,
             // и разбирать склейку за все прошлые сессии невозможно.
             if (Window.Current.Content == null) AppLog.Reset();
-            HoldAliveLock();
 
             Frame rootFrame = Window.Current.Content as Frame;
 

@@ -839,7 +839,6 @@ namespace VlessVpnTask
                 IsConnected = true;
                 SetTunnelUp(true);
                 StartWatchdog();
-                StartAppWatch();
                 PublishTile();
             }
             catch (Exception ex)
@@ -856,7 +855,14 @@ namespace VlessVpnTask
 
         public void Disconnect(VpnChannel channel)
         {
-            if (_disconnected) { try { channel?.Stop(); } catch { } return; }
+            var ch = channel ?? _channel;
+            if (_disconnected)
+            {
+                try { ch?.Stop(); } catch { }
+                _channel = null;
+                try { Disconnected?.Invoke(); } catch { }
+                return;
+            }
             _disconnected = true;
             SetTunnelUp(false);
 
@@ -878,13 +884,20 @@ namespace VlessVpnTask
             try { _awgEngine?.SignalStop(); } catch { }
             _awgEngine = null;
             try { _natEngine?.SignalStop(); } catch { }
+            _natEngine = null;
 
-            try { _dummyTransport?.Dispose(); } catch { }
-            _dummyTransport = null;
+            // Сначала останавливаем сам VpnChannel, ПОКА ассоциированный _dummyTransport ещё жив.
+            // Уничтожение _dummyTransport до channel.Stop() приводило к внутреннему сбою VpnUm/RasMan
+            // и ошибке Other при следующей попытке подключения.
+            try { ch?.Stop(); } catch { }
+            _channel = null;
+
+            try { _triggerWriter?.Dispose(); } catch { }
+            _triggerWriter = null;
             try { _dummyTrigger?.Dispose(); } catch { }
             _dummyTrigger = null;
-
-            try { channel?.Stop(); } catch { }
+            try { _dummyTransport?.Dispose(); } catch { }
+            _dummyTransport = null;
 
             IsConnected = false;
             try { Disconnected?.Invoke(); } catch { }
@@ -1099,7 +1112,6 @@ namespace VlessVpnTask
 
             IsConnected = true;
             SetTunnelUp(true);
-            StartAppWatch();
             PublishTile();
             FileLog.Important($"[AWG] TUN поднят: адрес {tunIp}, MTU {_awgConfig.Mtu}, DNS {string.Join(",", _awgConfig.Dns)}");
         }

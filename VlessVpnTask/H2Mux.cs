@@ -47,6 +47,7 @@ namespace VlessVpnTask
         private readonly SemaphoreSlim _upLock = new SemaphoreSlim(1, 1);
         private long _upSeq;
         private readonly GrpcFramer _grpcFramer;
+        private int _uncreditedBytes;
 
         internal H2Stream(H2MuxTransport t, int id, int initSendWindow, string sessionId = null, XhttpTransportMode mode = XhttpTransportMode.StreamOne)
         {
@@ -102,10 +103,23 @@ namespace VlessVpnTask
                 }
                 if (chunk != null)
                 {
-                    // Окно СТРИМА кредитуем после выдачи наружу — это back-pressure на стрим.
-                    // Окно СОЕДИНЕНИЯ насос кредитует сразу при приёме (чтобы медленный стрим
-                    // не блокировал остальные — общее окно велико и не «залипает»).
-                    await _t.CreditStreamAsync(Id, chunk.Length);
+                    // Окно СТРИМА кредитуем батчами по 512 КБ (половина StreamRecvWindow = 1 МБ),
+                    // чтобы не блокировать чтение синхронной шифрацией и отправкой 13-байтного TLS-кадра
+                    // на каждый чанк.
+                    int toCredit = 0;
+                    lock (_lock)
+                    {
+                        _uncreditedBytes += chunk.Length;
+                        if (_uncreditedBytes >= 512 * 1024)
+                        {
+                            toCredit = _uncreditedBytes;
+                            _uncreditedBytes = 0;
+                        }
+                    }
+                    if (toCredit > 0)
+                    {
+                        var _ignore = _t.CreditStreamAsync(Id, toCredit);
+                    }
                     return chunk;
                 }
                 await wait;
@@ -156,8 +170,8 @@ namespace VlessVpnTask
 
     internal sealed class H2MuxTransport
     {
-        private const int StreamRecvWindow = 128 * 1024;        // наше приёмное окно НА СТРИМ (лимит памяти на стрим; > BDP LTE, т.е. не режет скорость)
-        private const int ConnRecvWindowInit = 16 * 1024 * 1024; // приёмное окно СОЕДИНЕНИЯ (кредитуем сразу)
+        private const int StreamRecvWindow = 1024 * 1024;       // наше приёмное окно НА СТРИМ (1 МБ; батч WINDOW_UPDATE по 512 КБ)
+        private const int ConnRecvWindowInit = 16 * 1024 * 1024; // приёмное окно СОЕДИНЕНИЯ (кредитуем батчами по 2 МБ)
         private static readonly byte[] Preface = Encoding.ASCII.GetBytes("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
 
         private readonly VlessConfig _cfg;
@@ -191,6 +205,7 @@ namespace VlessVpnTask
         // буфер отложенного H2-парсинга (plaintext после Reality)
         private byte[] _buf = new byte[65536];
         private int _bufLen;
+        private int _uncreditedConnBytes;
         // управляющие кадры, накопленные при разборе (flush после Feed)
         private readonly List<byte> _pending = new List<byte>();
 
@@ -733,11 +748,14 @@ namespace VlessVpnTask
                             st.EnqueueDown(d);
                         }
 
-                        // Окно СОЕДИНЕНИЯ возвращаем СРАЗУ на весь кадр (payload.Length) —
-                        // чтобы медленный стрим не блокировал общий канал. Окно СТРИМА:
-                        // «служебную» часть (padding+padlen) сразу, полезные данные —
-                        // после выдачи наружу (см. H2Stream.ReadDownAsync → CreditStreamAsync).
-                        QueueWindowUpdate(0, payload.Length);
+                        // Окно СОЕДИНЕНИЯ (16 МБ) возвращаем крупными батчами по 2 МБ, чтобы не дёргать
+                        // сокет на каждый входящий DATA-кадр.
+                        _uncreditedConnBytes += payload.Length;
+                        if (_uncreditedConnBytes >= 2 * 1024 * 1024)
+                        {
+                            QueueWindowUpdate(0, _uncreditedConnBytes);
+                            _uncreditedConnBytes = 0;
+                        }
                         int immediateStream = payload.Length - dataLen;
                         if (st != null && immediateStream > 0) QueueWindowUpdate(sid, immediateStream);
 

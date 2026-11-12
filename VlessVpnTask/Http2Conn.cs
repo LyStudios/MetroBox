@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Threading.Tasks;
@@ -12,7 +12,8 @@ namespace VlessVpnTask
     internal sealed class Http2Conn
     {
         // ---- настройки нашего приёмного окна ----
-        private const int RecvWindow = 512 * 1024;   // 8 МБ на поток и на соединение
+        private const int RecvWindow = 2 * 1024 * 1024;   // 2 МБ на поток и на соединение
+        private int _uncreditedBytes = 0;
 
         private static readonly byte[] Preface = Encoding.ASCII.GetBytes("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
 
@@ -325,8 +326,14 @@ namespace VlessVpnTask
         public void CreditConsumed(int n)
         {
             if (n <= 0) return;
-            QueueWindowUpdate(0, n);  // окно соединения
-            QueueWindowUpdate(1, n);  // окно потока
+            _uncreditedBytes += n;
+            if (_uncreditedBytes >= RecvWindow / 2)
+            {
+                int credit = _uncreditedBytes;
+                _uncreditedBytes = 0;
+                QueueWindowUpdate(0, credit);  // окно соединения
+                QueueWindowUpdate(1, credit);  // окно потока
+            }
         }
 
         private void ApplyServerSettings(byte[] p)

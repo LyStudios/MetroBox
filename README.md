@@ -1,4 +1,4 @@
-# MetroBox 1.6 — Реанимация Windows 10 Mobile здорового человека
+# MetroBox 1.6.1 — Реанимация Windows 10 Mobile здорового человека
 
 > **Платформа:** Windows 10 Mobile (UWP SDK `10.0.14393.0`, ARM / `.NET Native`)  
 > **Поддерживаемые протоколы:** VLESS (`REALITY`, `TLS 1.3`, `XTLS-Vision`, `XHTTP / SplitHTTP`, `gRPC`, `WebSocket`, `TCP`), AmneziaWG, Shadowsocks / Outline

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -67,7 +67,8 @@ namespace VlessVpnTask
         public DateTime LastActivityUtc = DateTime.UtcNow;
 
         public uint OsAckedSeq;          // наибольший ACK от ОС (сколько она подтвердила)
-        public int OsWindow = 65535;    // последнее окно приёма, объявленное ОС
+        public int OsWindow = 262144;    // последнее окно приёма, объявленное ОС
+        public int OsWinShift = 0;       // сдвиг окна приёма ОС из TCP Window Scale (RFC 7323)
 
         public IDirectConn DirectConn;       // персональное соединение VLESS/Shadowsocks (direct-режим)
         public int DirectSlotState;          // 0/1 — занят ли слот _directSlots
@@ -123,7 +124,7 @@ namespace VlessVpnTask
         // канала ТОЛЬКО когда именно этот сабстрим реально насыщен (окно ОС закрыто, насос
         // не успевает сливать) — а не на каждом чанке, как было. Память ограничена,
         // брошенные приложением сокеты добивает FLOWCTRL-таймаут (>30с) внутри InjectDataToOs.
-        private const int MaxConnRecvBytes = 256 * 1024;
+        private const int MaxConnRecvBytes = 512 * 1024;
 
         // Ограничение очереди к ОС: если Decapsulate долго не забирает пакеты,
         // без лимита очередь раздувает память и процесс получает kill.
@@ -328,7 +329,7 @@ namespace VlessVpnTask
                     try { TriggerDecapsulate?.Invoke(); } catch { }
                     if (Volatile.Read(ref _osRxCount) > 0)
                     {
-                        try { _drainTimer?.Change(100, Timeout.Infinite); } catch { }
+                        try { _drainTimer?.Change(15, Timeout.Infinite); } catch { }
                     }
                 }
             }, null, Timeout.Infinite, Timeout.Infinite);
@@ -551,6 +552,24 @@ public void SignalStop()
 
                 ushort sid = NextSid();
 
+                int wsShift = 0;
+                int optPos = t + 20;
+                int optEnd = Math.Min(length, t + dataOff);
+                while (optPos < optEnd)
+                {
+                    byte kind = buf[optPos];
+                    if (kind == 0) break;
+                    if (kind == 1) { optPos++; continue; }
+                    if (optPos + 1 >= optEnd) break;
+                    int optLen = buf[optPos + 1];
+                    if (optLen < 2 || optPos + optLen > optEnd) break;
+                    if (kind == 3 && optLen == 3)
+                    {
+                        wsShift = Math.Min((int)buf[optPos + 2], 8);
+                    }
+                    optPos += optLen;
+                }
+
                 c = new TcpConn
                 {
                     Key = key,
@@ -562,6 +581,7 @@ public void SignalStop()
                     DstPort = dstPort,
                     MySeq = NextIsn(),
                     PeerSeq = seq + 1,
+                    OsWinShift = wsShift,
                     State = TcpState.SynReceived
                 };
 
@@ -596,10 +616,12 @@ public void SignalStop()
             if ((flags & ACK) != 0)
             {
                 uint ackNum = ReadU32(buf, t + 8);
-                int win = (buf[t + 14] << 8) | buf[t + 15];
+                int rawWin = (buf[t + 14] << 8) | buf[t + 15];
                 lock (c.Lock)
                 {
                     if ((int)(ackNum - c.OsAckedSeq) > 0) c.OsAckedSeq = ackNum; // только вперёд (с учётом wraparound)
+                    int win = rawWin << c.OsWinShift;
+                    if (win > 524288) win = 524288;
                     c.OsWindow = win;
                 }
             }
@@ -876,15 +898,31 @@ public void SignalStop()
                         for (int i = 0; i < n; i++) sb.Append(data[i].ToString("X2")).Append(' ');
                         FileLog.W($"[DIRECT->OS] {c.Key} {data.Length}b: {sb}");
                     }
-                    await InjectDataToOs(c, data);
+
+                    // Складываем payload в очередь соединения и продолжаем читать сокет параллельно,
+                    // чтобы паузы на окно ОС (Task.Delay(5) в InjectDataToOs) не останавливали чтение из сети.
+                    c.RecvQueue.Enqueue(data);
+                    Interlocked.Add(ref c.RecvQueuedBytes, data.Length);
+                    if (Interlocked.CompareExchange(ref c.Receiving, 1, 0) == 0)
+                        _ = Task.Run(() => ProcessRecvQueueAsync(c));
+
+                    while (Volatile.Read(ref c.RecvQueuedBytes) > MaxConnRecvBytes)
+                    {
+                        if (_stopped || c.State == TcpState.Closed) break;
+                        await Task.Delay(5);
+                    }
                 }
             }
             catch (Exception ex) { why = ex.Message; FileLog.W($"[DIRECT READ] {c.Key}: {ex.Message}"); }
             finally
             {
-                // Цикл раньше завершался молча, поэтому «сервер закрыл соединение» и
-                // «сервер молчит, а мы ждём» выглядели в логе совершенно одинаково —
-                // никак. А это два разных диагноза, и различие между ними решающее.
+                // Дожидаемся слива уже принятых в RecvQueue данных перед отправкой FIN в ОС.
+                int drainWait = 0;
+                while (!_stopped && c.State != TcpState.Closed && (!c.RecvQueue.IsEmpty || Volatile.Read(ref c.Receiving) == 1) && drainWait < 2000)
+                {
+                    await Task.Delay(5);
+                    drainWait += 5;
+                }
                 FileLog.Important($"[DIRECT<-] {c.Key}: downstream завершён ({why}), принято {got}б.");
                 try { conn.Close(); } catch { }
                 CloseConnLocal(c);
@@ -1232,6 +1270,11 @@ public void SignalStop()
 
                     if (c.State == TcpState.Closed || _stopped) return;
 
+                    if (Volatile.Read(ref _osRxCount) > 0 && Interlocked.CompareExchange(ref _triggerPending, 1, 0) == 0)
+                    {
+                        try { TriggerDecapsulate?.Invoke(); } catch { }
+                    }
+
                     await Task.Delay(5);
 
                     windowWaitMs += 5;
@@ -1253,7 +1296,8 @@ public void SignalStop()
                     seg = BuildSegment(c, flags, c.MySeq, c.PeerSeq, payload, off, chunk, false);
                     c.MySeq += (uint)chunk;
                 }
-                EnqueueToOs(seg, seg.Length, trigger: true);
+                bool isLastInChunk = (off + chunk >= payload.Length);
+                EnqueueToOs(seg, seg.Length, trigger: isLastInChunk || Volatile.Read(ref _osRxCount) >= 32);
                 off += chunk;
             }
         }
@@ -1500,7 +1544,7 @@ public void SignalStop()
 
         private byte[] BuildSegment(TcpConn c, byte flags, uint seq, uint ack, byte[] payload, int payloadOff, int payloadLen, bool withMss)
         {
-            int tcpHdr = withMss ? 24 : 20;
+            int tcpHdr = withMss ? 28 : 20;
             int total = (c.IsIpv6 ? 40 : 20) + tcpHdr + payloadLen;
             byte[] b = new byte[total];
             int o;
@@ -1540,6 +1584,9 @@ public void SignalStop()
             {
                 b[o + 20] = 2; b[o + 21] = 4;
                 b[o + 22] = (byte)(MSS >> 8); b[o + 23] = (byte)(MSS & 0xFF);
+                // TCP Window Scale Option (RFC 7323): NOP (1) + WSopt (Kind=3, Len=3, Shift=4)
+                b[o + 24] = 1;
+                b[o + 25] = 3; b[o + 26] = 3; b[o + 27] = 4;
             }
             if (payloadLen > 0)
                 System.Buffer.BlockCopy(payload, payloadOff, b, o + tcpHdr, payloadLen);
@@ -1585,15 +1632,16 @@ public void SignalStop()
                 if (trigger)
                 {
                     // Шлем быстрый триггер для низкого пинга.
-                    // Если он потеряется, резервный _drainTimer подстрахует и пнет ОС через 100 мс.
+                    // Если он потеряется или склеится ОС, резервный _drainTimer подстрахует через 15 мс (и отключается в простое).
                     if (Interlocked.CompareExchange(ref _triggerPending, 1, 0) == 0)
                     {
                         try { TriggerDecapsulate?.Invoke(); } catch { }
+                        try { _drainTimer?.Change(15, Timeout.Infinite); } catch { }
                     }
                 }
                 if (count == 1)
                 {
-                    try { _drainTimer?.Change(100, Timeout.Infinite); } catch { }
+                    try { _drainTimer?.Change(15, Timeout.Infinite); } catch { }
                 }
             }
             catch (Exception ex)

@@ -110,7 +110,7 @@ namespace VlessVpnTask
                         try { TriggerDecapsulate?.Invoke(); } catch { }
                         if (Volatile.Read(ref _osRxCount) > 0)
                         {
-                            try { _drainTimer?.Change(100, Timeout.Infinite); } catch { }
+                            try { _drainTimer?.Change(15, Timeout.Infinite); } catch { }
                         }
                     }
                 }, null, Timeout.Infinite, Timeout.Infinite);
@@ -383,10 +383,14 @@ namespace VlessVpnTask
                 Interlocked.Increment(ref _rxPackets);
                 Interlocked.Add(ref _rxBytes, plain.Length);
 
-                if (Interlocked.Exchange(ref _triggerPending, 1) == 0) KickDecapsulate();
-                if (count == 1)
+                if (Interlocked.Exchange(ref _triggerPending, 1) == 0)
                 {
-                    try { _drainTimer?.Change(100, Timeout.Infinite); } catch { }
+                    KickDecapsulate();
+                    try { _drainTimer?.Change(15, Timeout.Infinite); } catch { }
+                }
+                else if (count == 1)
+                {
+                    try { _drainTimer?.Change(15, Timeout.Infinite); } catch { }
                 }
             }
             catch (Exception ex) { FileLog.W($"[AWG] Ошибка приёма: {ex.Message}"); }
