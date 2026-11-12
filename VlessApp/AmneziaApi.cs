@@ -170,47 +170,9 @@ namespace VlessApp
             catch { return "<не текст>"; }
         }
 
-        // Шлюз ответил, но не тем, что мы ждали. Несёт статус и тело как есть.
-        public sealed class GatewayException : Exception
-        {
-            public int HttpStatus { get; private set; }
-            public string RawBody { get; private set; }
-            public GatewayException(string message, int status, string rawBody) : base(message)
-            {
-                HttpStatus = status;
-                RawBody = rawBody;
-            }
-        }
-
-        public sealed class Subscription
-        {
-            public string ApiKey;
-            public string ServiceType;       // "amnezia-premium"
-            public string ServiceProtocol;   // "awg"
-            public string UserCountryCode;   // "ru"
-            public string Name;
-            // Куда подключаться. Пусто — выбирает шлюз. Подписка выдаёт ОДИН
-            // активный конфиг на устройство, поэтому смена страны — это новый
-            // запрос, после которого прежний конфиг отзывается.
-            public string ServerCountryCode;
-        }
-
-        public sealed class Country
-        {
-            public string Code;
-            public string Name;
-            public List<string> Protocols = new List<string>();
-
-            public override string ToString()
-            {
-                string p = Protocols.Count > 0 ? " · " + string.Join("/", Protocols).ToUpperInvariant() : "";
-                return (string.IsNullOrEmpty(Name) ? Code : Name) + p;
-            }
-        }
-
         // =====================================================================
 
-        public static async Task<List<VlessProfile>> FetchAsync(Subscription sub, string groupName)
+        public static async Task<List<VlessProfile>> FetchAsync(AmneziaSubscription sub, string groupName)
         {
             var result = new List<VlessProfile>();
             if (sub == null || string.IsNullOrEmpty(sub.ApiKey))
@@ -226,8 +188,8 @@ namespace VlessApp
             string privB64 = "", pubB64;
             if (isAwg)
             {
-                byte[] priv = X25519.CreateRandomPrivateKey();
-                byte[] pub = X25519.GetPublicKey(priv);
+                byte[] priv = AmneziaX25519.CreateRandomPrivateKey();
+                byte[] pub = AmneziaX25519.GetPublicKey(priv);
                 privB64 = Convert.ToBase64String(priv);
                 pubB64 = Convert.ToBase64String(pub);
             }
@@ -308,7 +270,7 @@ namespace VlessApp
                 // дописать разбор, не гадая по заголовочным файлам.
                 profile = TryParseNonWg(serverConfig, groupName);
                 if (profile == null)
-                    throw new UnsupportedConfigException(
+                    throw new AmneziaUnsupportedConfigException(
                         $"шлюз выдал конфиг протокола «{protocol}», разобрать его мы пока не умеем ({reason}).",
                         Sanitize(serverConfig));
             }
@@ -329,14 +291,6 @@ namespace VlessApp
             profile.GroupTitle = FirstNonEmpty(sub.Name, parsedName, configName, "Amnezia Premium");
             result.Add(profile);
             return result;
-        }
-
-        // Конфиг пришёл, но разобрать его нечем. Несёт обезличенную структуру
-        // ответа, чтобы её можно было показать и скопировать.
-        public sealed class UnsupportedConfigException : Exception
-        {
-            public string Dump { get; private set; }
-            public UnsupportedConfigException(string message, string dump) : base(message) { Dump = dump; }
         }
 
         // Попытка вытащить профиль из контейнера, отличного от AmneziaWG.
@@ -600,7 +554,7 @@ namespace VlessApp
             return rows;
         }
 
-        private static void ApplyApiConfig(VlessProfile profile, JsonObject serverConfig, Subscription sub)
+        private static void ApplyApiConfig(VlessProfile profile, JsonObject serverConfig, AmneziaSubscription sub)
         {
             JsonObject api = null;
             try { if (serverConfig.ContainsKey("api_config")) api = serverConfig.GetNamedObject("api_config"); }
@@ -648,9 +602,9 @@ namespace VlessApp
                     (c.Protocols.Count == 0 ? "<список пуст>" : string.Join(", ", c.Protocols)));
         }
 
-        public static List<Country> ParseCountries(JsonObject api)
+        public static List<AmneziaCountry> ParseCountries(JsonObject api)
         {
-            var list = new List<Country>();
+            var list = new List<AmneziaCountry>();
             if (api == null || !api.ContainsKey("available_countries")) return list;
 
             JsonArray arr;
@@ -662,7 +616,7 @@ namespace VlessApp
                 JsonObject o;
                 try { o = item.GetObject(); } catch { continue; }
 
-                var c = new Country
+                var c = new AmneziaCountry
                 {
                     Code = GetStr(o, "server_country_code") ?? "",
                     Name = GetStr(o, "server_country_name") ?? ""
@@ -684,7 +638,7 @@ namespace VlessApp
         // Список стран хранится в профиле строкой: «код|имя|awg,vless» через ';'.
         // Отдельная модель ради этого не нужна, а DataContract-сериализация
         // списка объектов потребовала бы менять формат profiles.json.
-        public static string SerializeCountries(List<Country> countries)
+        public static string SerializeCountries(List<AmneziaCountry> countries)
         {
             var parts = new List<string>();
             foreach (var c in countries)
@@ -692,15 +646,15 @@ namespace VlessApp
             return string.Join(";", parts);
         }
 
-        public static List<Country> DeserializeCountries(string s)
+        public static List<AmneziaCountry> DeserializeCountries(string s)
         {
-            var list = new List<Country>();
+            var list = new List<AmneziaCountry>();
             if (string.IsNullOrWhiteSpace(s)) return list;
             foreach (var chunk in s.Split(';'))
             {
                 if (chunk.Length == 0) continue;
                 var f = chunk.Split('|');
-                var c = new Country { Code = f.Length > 0 ? f[0] : "", Name = f.Length > 1 ? f[1] : "" };
+                var c = new AmneziaCountry { Code = f.Length > 0 ? f[0] : "", Name = f.Length > 1 ? f[1] : "" };
                 if (f.Length > 2 && f[2].Length > 0) c.Protocols.AddRange(f[2].Split(','));
                 list.Add(c);
             }
@@ -764,21 +718,15 @@ namespace VlessApp
             }
 
             if (plain == null)
-                throw new GatewayException(BuildPlainErrorMessage(lastStatus, lastRaw), lastStatus, lastRaw);
+                throw new AmneziaGatewayException(BuildPlainErrorMessage(lastStatus, lastRaw), lastStatus, lastRaw);
 
             string decoded = Encoding.UTF8.GetString(plain);
             Log($"  расшифровано {plain.Length}б: {(decoded.Length > 400 ? decoded.Substring(0, 400) + "…" : decoded)}");
             return decoded;
         }
 
-        private struct SendResult
-        {
-            public int Status;
-            public string Raw;
-        }
-
         private static async Task<byte[]> TrySendAsync(List<string> baseUrls, string path, string requestBody,
-                                                       byte[] key, byte[] iv, Action<SendResult> onFailure)
+                                                       byte[] key, byte[] iv, Action<AmneziaSendResult> onFailure)
         {
             foreach (var baseUrl in baseUrls)
             {
@@ -809,14 +757,14 @@ namespace VlessApp
                 catch (Exception ex)
                 {
                     Log($"  сеть: {ex.GetType().Name}: {ex.Message}");
-                    onFailure(new SendResult { Status = 0, Raw = ex.Message });
+                    onFailure(new AmneziaSendResult { Status = 0, Raw = ex.Message });
                     continue;
                 }
 
                 if (responseBytes.Length == 0)
                 {
                     Log("  тело пустое.");
-                    onFailure(new SendResult { Status = status, Raw = "" });
+                    onFailure(new AmneziaSendResult { Status = status, Raw = "" });
                     continue;
                 }
 
@@ -837,7 +785,7 @@ namespace VlessApp
                 if (plain == null && raw.IndexOf("html", StringComparison.OrdinalIgnoreCase) >= 0)
                     Log("  в теле HTML — запрос перехвачен по дороге, до шлюза он не дошёл.");
                 Log($"  тело как текст: {raw}");
-                onFailure(new SendResult { Status = status, Raw = raw });
+                onFailure(new AmneziaSendResult { Status = status, Raw = raw });
             }
             return null;
         }
@@ -986,7 +934,7 @@ namespace VlessApp
                    (body.Length > 200 ? body.Substring(0, 200) + "…" : body);
         }
 
-        private static byte[] CryptoBytes(uint n)
+        internal static byte[] CryptoBytes(uint n)
         {
             var buf = CryptographicBuffer.GenerateRandom(n);
             byte[] o;
@@ -1061,102 +1009,5 @@ namespace VlessApp
             return "";
         }
 
-        // =====================================================================
-        // X25519 — только для генерации пары ключей WireGuard при импорте.
-        // Лестница Монтгомери на BigInteger: вызывается один раз за импорт,
-        // поэтому скорость не важна, а короткий код проще проверить.
-        // =====================================================================
-        internal static class X25519
-        {
-            private static readonly BigInteger P =
-                (BigInteger.One << 255) - 19;
-            private const int A24 = 121665;
-
-            public static byte[] CreateRandomPrivateKey()
-            {
-                byte[] k = CryptoBytes(32);
-                k[0] &= 248; k[31] &= 127; k[31] |= 64;
-                return k;
-            }
-
-            public static byte[] GetPublicKey(byte[] privateKey)
-            {
-                byte[] basePoint = new byte[32];
-                basePoint[0] = 9;
-                return ScalarMult(privateKey, basePoint);
-            }
-
-            public static byte[] ScalarMult(byte[] scalar, byte[] uCoord)
-            {
-                byte[] k = (byte[])scalar.Clone();
-                k[0] &= 248; k[31] &= 127; k[31] |= 64;
-
-                byte[] u = (byte[])uCoord.Clone();
-                u[31] &= 0x7F;                       // RFC 7748: старший бит u игнорируется
-                BigInteger x1 = FromLe(u);
-
-                BigInteger x2 = BigInteger.One, z2 = BigInteger.Zero;
-                BigInteger x3 = x1, z3 = BigInteger.One;
-                int swap = 0;
-
-                for (int t = 254; t >= 0; t--)
-                {
-                    int kt = (k[t >> 3] >> (t & 7)) & 1;
-                    swap ^= kt;
-                    CSwap(swap, ref x2, ref x3);
-                    CSwap(swap, ref z2, ref z3);
-                    swap = kt;
-
-                    BigInteger a = Mod(x2 + z2);
-                    BigInteger aa = Mod(a * a);
-                    BigInteger b = Mod(x2 - z2);
-                    BigInteger bb = Mod(b * b);
-                    BigInteger e = Mod(aa - bb);
-                    BigInteger c = Mod(x3 + z3);
-                    BigInteger d = Mod(x3 - z3);
-                    BigInteger da = Mod(d * a);
-                    BigInteger cb = Mod(c * b);
-
-                    x3 = Mod((da + cb) * (da + cb));
-                    z3 = Mod(x1 * Mod((da - cb) * (da - cb)));
-                    x2 = Mod(aa * bb);
-                    z2 = Mod(e * (aa + A24 * e));
-                }
-
-                CSwap(swap, ref x2, ref x3);
-                CSwap(swap, ref z2, ref z3);
-
-                BigInteger res = Mod(x2 * BigInteger.ModPow(z2, P - 2, P));
-                return ToLe(res);
-            }
-
-            private static void CSwap(int swap, ref BigInteger a, ref BigInteger b)
-            {
-                if (swap == 0) return;
-                BigInteger t = a; a = b; b = t;
-            }
-
-            private static BigInteger Mod(BigInteger v)
-            {
-                BigInteger r = v % P;
-                if (r.Sign < 0) r += P;
-                return r;
-            }
-
-            private static BigInteger FromLe(byte[] le)
-            {
-                byte[] t = new byte[le.Length + 1];   // хвостовой ноль — число без знака
-                System.Buffer.BlockCopy(le, 0, t, 0, le.Length);
-                return new BigInteger(t);
-            }
-
-            private static byte[] ToLe(BigInteger v)
-            {
-                byte[] raw = v.ToByteArray();
-                byte[] o = new byte[32];
-                System.Buffer.BlockCopy(raw, 0, o, 0, Math.Min(32, raw.Length));
-                return o;
-            }
-        }
     }
 }

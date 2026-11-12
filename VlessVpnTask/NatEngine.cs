@@ -14,67 +14,6 @@ using Windows.Storage.Streams;
 
 namespace VlessVpnTask
 {
-    internal enum TcpState { SynReceived, Established, Closed }
-
-
-    internal class TcpConn
-    {
-        public string Key;
-        public ushort Sid; // MUX Stream ID
-        public bool MuxNewSent = false;
-
-        public bool IsIpv6 = false; // Флаг IPv6 соединения
-        public byte[] SrcIp;
-        public byte[] DstIp;
-        public ushort SrcPort;
-        public ushort DstPort;
-
-        public uint IsnBase;
-        public uint MySeq;
-        public uint PeerSeq;
-
-        public volatile TcpState State;
-        public readonly object Lock = new object();
-        public int Closing;
-        public int MuxSlotState; // 0 = слот MUX не занят, 1 = занят (см. _tcpSlots)
-        public NatEngine.MuxCarrier Carrier;
-
-        public readonly ConcurrentQueue<byte[]> SendQueue = new ConcurrentQueue<byte[]>();
-        public int Sending = 0;
-        public readonly ConcurrentQueue<byte[]> RecvQueue = new ConcurrentQueue<byte[]>();
-        public int Receiving = 0;
-        public int RecvQueuedBytes = 0; // через Interlocked — для backpressure к несущему каналу
-
-
-        public bool SendFinPending = false;
-
-        // Сколько ждём downstream после локального FIN, прежде чем гасить туннельный
-        // сокет. Ответ сервера почти всегда приходит за доли секунды; запас нужен
-        // только чтобы полузакрытые соединения не копились и не съедали слоты.
-        public const int HalfCloseGraceMs = 10000;
-
-        public byte[] DnsServerIp = new byte[4];
-        public readonly List<byte> DnsBuffer = new List<byte>();
-        public DateTime DnsStartTime;
-        public string DnsQueryDomain;
-
-        // HTTP(S)-прокси режим (для AppContainer-приложений в обход WFP-изоляции TUN).
-        public bool IsProxy = false;           // соединение пришло на адрес прокси
-        public bool ProxyEstablished = false;  // заголовок CONNECT/GET уже разобран
-        public ushort ProxyTargetPort;         // реальный порт назначения (для MUX New-кадра)
-        public readonly List<byte> ProxyHead = new List<byte>();
-
-        public DateTime LastActivityUtc = DateTime.UtcNow;
-
-        public uint OsAckedSeq;          // наибольший ACK от ОС (сколько она подтвердила)
-        public int OsWindow = 262144;    // последнее окно приёма, объявленное ОС
-        public int OsWinShift = 0;       // сдвиг окна приёма ОС из TCP Window Scale (RFC 7323)
-
-        public IDirectConn DirectConn;       // персональное соединение VLESS/Shadowsocks (direct-режим)
-        public int DirectSlotState;          // 0/1 — занят ли слот _directSlots
-
-    }
-
     internal class NatEngine
     {
         private const byte FIN = 0x01, SYN = 0x02, RST = 0x04, PSH = 0x08, ACK = 0x10;
@@ -82,15 +21,6 @@ namespace VlessVpnTask
 
         private readonly ConcurrentDictionary<string, TcpConn> _conns = new ConcurrentDictionary<string, TcpConn>();
         private readonly Random _rnd = new Random();
-
-        // --- Пул несущих MUX-каналов ---
-        internal sealed class MuxCarrier
-        {
-            public VlessConnection Conn;
-            public volatile bool Running;
-            public int Substreams;                 // через Interlocked
-            public readonly SemaphoreSlim WriteLock = new SemaphoreSlim(1, 1);
-        }
 
         private const int PerCarrierMax = 8;                          // лимит сервера (muxConcurrency=8) на ОДИН канал
         private const int MaxCarriers = 8;                          // сколько несущих TLS-каналов держим максимум
@@ -2199,61 +2129,6 @@ public void SignalStop()
             ushort finalChecksum = (ushort)(~sum);
             if (finalChecksum == 0) finalChecksum = 0xFFFF;
             buf[u + 6] = (byte)(finalChecksum >> 8); buf[u + 7] = (byte)(finalChecksum & 0xFF);
-        }
-
-        // Растущий байтовый буфер со скользящим окном [_start, _start+_count).
-        // Заменяет List<byte> + Skip/Take/RemoveRange (которые были O(n) на каждый MUX-фрейм).
-        private sealed class ByteAccumulator
-        {
-            private byte[] _buf = new byte[16384];
-            private int _start;
-            private int _count;
-
-            public int Count => _count;
-
-            // Индекс относительно логического начала окна.
-            public byte this[int i] => _buf[_start + i];
-
-            public void Append(byte[] data, int len)
-            {
-                EnsureSpace(len);
-                System.Buffer.BlockCopy(data, 0, _buf, _start + _count, len);
-                _count += len;
-            }
-
-            public byte[] Slice(int off, int n)
-            {
-                var r = new byte[n];
-                System.Buffer.BlockCopy(_buf, _start + off, r, 0, n);
-                return r;
-            }
-
-            public void Consume(int n)
-            {
-                _start += n;
-                _count -= n;
-                if (_count == 0) _start = 0;
-                else if (_start > _buf.Length / 2) Compact();
-            }
-
-            private void EnsureSpace(int extra)
-            {
-                if (_start + _count + extra <= _buf.Length) return;
-                if (_count + extra <= _buf.Length) { Compact(); return; }
-                int newCap = _buf.Length;
-                while (newCap < _count + extra) newCap *= 2;
-                var nb = new byte[newCap];
-                System.Buffer.BlockCopy(_buf, _start, nb, 0, _count);
-                _buf = nb;
-                _start = 0;
-            }
-
-            private void Compact()
-            {
-                if (_start == 0) return;
-                System.Buffer.BlockCopy(_buf, _start, _buf, 0, _count);
-                _start = 0;
-            }
         }
 
     }

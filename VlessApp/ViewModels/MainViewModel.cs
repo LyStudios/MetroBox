@@ -163,7 +163,7 @@ namespace VlessApp.ViewModels
         internal Func<string, string, Task> RequestMessageDialog;
         internal Func<int, Task> RequestImportReportDialog;
         internal Func<Exception, Task> RequestAmneziaErrorDialog;
-        internal Func<AmneziaApi.UnsupportedConfigException, Task> RequestUnsupportedConfigDialog;
+        internal Func<AmneziaUnsupportedConfigException, Task> RequestUnsupportedConfigDialog;
         internal Action RequestNavigateToVpnSettings;
         internal Action RequestHardReset;
 
@@ -991,7 +991,7 @@ namespace VlessApp.ViewModels
                     if (RequestImportReportDialog != null) await RequestImportReportDialog(0);
                 }
             }
-            catch (AmneziaApi.UnsupportedConfigException ex)
+            catch (AmneziaUnsupportedConfigException ex)
             {
                 StatusText = "Конфиг получен, но не разобран.";
                 if (RequestUnsupportedConfigDialog != null) await RequestUnsupportedConfigDialog(ex);
@@ -1083,7 +1083,7 @@ namespace VlessApp.ViewModels
                     StatusText = $"Конфиг получен: {issued.Name} ({ping})";
                 }
             }
-            catch (AmneziaApi.UnsupportedConfigException ex)
+            catch (AmneziaUnsupportedConfigException ex)
             {
                 row.CleanPingText = was;
                 if (RequestUnsupportedConfigDialog != null) await RequestUnsupportedConfigDialog(ex);
@@ -1170,4 +1170,3 @@ namespace VlessApp.ViewModels
         }
     }
 }
-

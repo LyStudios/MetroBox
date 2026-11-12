@@ -471,7 +471,7 @@ namespace VlessApp
             }.ShowAsync();
         }
 
-        private async Task ShowUnsupportedConfigAsync(AmneziaApi.UnsupportedConfigException ex)
+        private async Task ShowUnsupportedConfigAsync(AmneziaUnsupportedConfigException ex)
         {
             var text = new TextBox
             {
@@ -773,7 +773,7 @@ namespace VlessApp
             };
             if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
 
-            var chosen = list.SelectedItem as AmneziaApi.Country;
+            var chosen = list.SelectedItem as AmneziaCountry;
             if (chosen == null) return;
 
             var sub = AmneziaLink.TryGetApiSubscription(group.Key);

@@ -96,31 +96,4 @@ namespace VlessVpnTask
 
         public void Dispose() { }
     }
-
-    internal sealed class ChainOutputStream : IOutputStream
-    {
-        private readonly IDirectConn _inner;
-
-        public ChainOutputStream(IDirectConn inner) { _inner = inner; }
-
-        public IAsyncOperationWithProgress<uint, uint> WriteAsync(IBuffer buffer)
-        {
-            return AsyncInfo.Run<uint, uint>(async (token, progress) =>
-            {
-                byte[] data;
-                Windows.Security.Cryptography.CryptographicBuffer.CopyToByteArray(buffer, out data);
-                if (data != null && data.Length > 0)
-                    await _inner.WriteUnderlyingAsync(data);
-                return (uint)(data == null ? 0 : data.Length);
-            });
-        }
-
-        public IAsyncOperation<bool> FlushAsync()
-        {
-            // Первое звено пишет в сокет само, отдельного сброса ему не нужно.
-            return AsyncInfo.Run(token => Task.FromResult(true));
-        }
-
-        public void Dispose() { }
-    }
 }

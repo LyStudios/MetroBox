@@ -142,12 +142,20 @@
     </Compile>
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="AmneziaApi.cs" />
+    <Compile Include="AmneziaX25519.cs" />
     <Compile Include="AppLog.cs" />
     <Compile Include="AmneziaLink.cs" />
     <Compile Include="CountryFlags.cs" />
     <Compile Include="HappCrypto.cs" />
     <Compile Include="VlessProfile.cs" />
     <Compile Include="VpnManager.cs" />
+    <Compile Include="Models\AmneziaCountry.cs" />
+    <Compile Include="Models\AmneziaGatewayException.cs" />
+    <Compile Include="Models\AmneziaLinkResult.cs" />
+    <Compile Include="Models\AmneziaSendResult.cs" />
+    <Compile Include="Models\AmneziaSubscription.cs" />
+    <Compile Include="Models\AmneziaUnsupportedConfigException.cs" />
+    <Compile Include="Models\ImportReport.cs" />
     <Compile Include="Models\ProfileGroup.cs" />
     <Compile Include="Mvvm\ObservableObject.cs" />
     <Compile Include="Mvvm\RelayCommand.cs" />

@@ -20,8 +20,7 @@ namespace VlessVpnTask
         public bool Chunked { get; private set; } = true;   // выставляется из ответа
 
         // ---- состояние де-чанкера ----
-        private enum S { Size, Data, AfterCR, AfterLF, Done }
-        private S _state = S.Size;
+        private ChunkedDecodeState _state = ChunkedDecodeState.Size;
         private int _need;
         private readonly StringBuilder _sizeAcc = new StringBuilder();
         private byte[] _buf = new byte[65536];
@@ -166,9 +165,9 @@ namespace VlessVpnTask
 
             var outp = new List<byte>();
             int i = 0;
-            while (i < _bufLen && _state != S.Done)
+            while (i < _bufLen && _state != ChunkedDecodeState.Done)
             {
-                if (_state == S.Size)
+                if (_state == ChunkedDecodeState.Size)
                 {
                     byte b = _buf[i++];
                     if (b == (byte)'\n')
@@ -179,35 +178,35 @@ namespace VlessVpnTask
                         if (semi >= 0) line = line.Substring(0, semi);
                         int sz;
                         try { sz = Convert.ToInt32(line, 16); }
-                        catch { FileLog.Important($"[XHTTP ERROR] Битый chunk-size: '{line}'"); _state = S.Done; break; }
+                        catch { FileLog.Important($"[XHTTP ERROR] Битый chunk-size: '{line}'"); _state = ChunkedDecodeState.Done; break; }
 
-                        if (sz == 0) { _state = S.Done; break; }
+                        if (sz == 0) { _state = ChunkedDecodeState.Done; break; }
                         _need = sz;
-                        _state = S.Data;
+                        _state = ChunkedDecodeState.Data;
                     }
                     else if (b != (byte)'\r')
                     {
                         _sizeAcc.Append((char)b);
-                        if (_sizeAcc.Length > 16) { _state = S.Done; break; }
+                        if (_sizeAcc.Length > 16) { _state = ChunkedDecodeState.Done; break; }
                     }
                 }
-                else if (_state == S.Data)
+                else if (_state == ChunkedDecodeState.Data)
                 {
                     int take = Math.Min(_bufLen - i, _need);
                     for (int k = 0; k < take; k++) outp.Add(_buf[i + k]);
                     i += take; _need -= take;
-                    if (_need == 0) _state = S.AfterCR;
+                    if (_need == 0) _state = ChunkedDecodeState.AfterCR;
                 }
-                else if (_state == S.AfterCR)
+                else if (_state == ChunkedDecodeState.AfterCR)
                 {
                     byte b = _buf[i++];
-                    if (b == (byte)'\n') _state = S.Size;
-                    else _state = S.AfterLF;
+                    if (b == (byte)'\n') _state = ChunkedDecodeState.Size;
+                    else _state = ChunkedDecodeState.AfterLF;
                 }
-                else if (_state == S.AfterLF)
+                else if (_state == ChunkedDecodeState.AfterLF)
                 {
                     i++;
-                    _state = S.Size;
+                    _state = ChunkedDecodeState.Size;
                 }
             }
 
@@ -219,7 +218,7 @@ namespace VlessVpnTask
             return outp.Count == 0 ? new byte[0] : outp.ToArray();
         }
 
-        public bool StreamClosed => _state == S.Done;
+        public bool StreamClosed => _state == ChunkedDecodeState.Done;
 
         private static int IndexOfDoubleCrlf(byte[] b, int length)
         {

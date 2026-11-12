@@ -21,14 +21,8 @@ namespace VlessVpnTask
         private const uint Mask   = 0xFFFF0000u; // /16
         private const int  MaxHosts = 65533;
 
-        public sealed class Target
-        {
-            public byte[] RealIp;    // 4 байта, реальный A-ответ от upstream DNS
-            public string Domain;    // оригинальный запрошенный домен
-        }
-
-        private static readonly ConcurrentDictionary<uint, Target> _fakeToTarget
-            = new ConcurrentDictionary<uint, Target>();
+        private static readonly ConcurrentDictionary<uint, FakeDnsTarget> _fakeToTarget
+            = new ConcurrentDictionary<uint, FakeDnsTarget>();
         private static readonly ConcurrentDictionary<string, uint> _nameToFake
             = new ConcurrentDictionary<string, uint>(StringComparer.OrdinalIgnoreCase);
 
@@ -64,13 +58,13 @@ namespace VlessVpnTask
             uint fake;
             if (_nameToFake.TryGetValue(key, out fake))
             {
-                _fakeToTarget[fake] = new Target { RealIp = realIp4, Domain = key };
+                _fakeToTarget[fake] = new FakeDnsTarget { RealIp = realIp4, Domain = key };
             }
             else
             {
                 fake = AllocateStable(key);
                 _nameToFake[key] = fake;
-                _fakeToTarget[fake] = new Target { RealIp = realIp4, Domain = key };
+                _fakeToTarget[fake] = new FakeDnsTarget { RealIp = realIp4, Domain = key };
             }
             return new byte[] {
                 (byte)(fake >> 24),

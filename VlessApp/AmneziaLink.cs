@@ -15,12 +15,6 @@ namespace VlessApp
     // в контейнере "awg" полем last_config → config (это готовый текст .conf).
     internal static class AmneziaLink
     {
-        public sealed class Result
-        {
-            public string ConfText;     // готовый текст .conf
-            public string Name;         // имя профиля из поля description
-            public string HostName;     // адрес сервера (для имени по умолчанию)
-        }
 
         public static bool IsAmneziaLink(string s)
         {
@@ -50,13 +44,13 @@ namespace VlessApp
 
         // Подписка Amnezia Premium (config_version 2): конфига внутри нет, есть
         // только ключ доступа к API. Возвращает null, если ссылка не такая.
-        public static AmneziaApi.Subscription TryGetApiSubscription(string link)
+        public static AmneziaSubscription TryGetApiSubscription(string link)
         {
             JsonObject root = DecodePayload(link);
             return root == null ? null : TryGetApiSubscription(root);
         }
 
-        public static AmneziaApi.Subscription TryGetApiSubscription(JsonObject root)
+        public static AmneziaSubscription TryGetApiSubscription(JsonObject root)
         {
             if (root == null) return null;
             if (FindAwgContainer(root) != null) return null;   // обычный конфиг, API не нужен
@@ -69,7 +63,7 @@ namespace VlessApp
             string apiKey = GetStr(auth, "api_key");
             if (string.IsNullOrEmpty(apiKey)) return null;
 
-            return new AmneziaApi.Subscription
+            return new AmneziaSubscription
             {
                 ApiKey = apiKey,
                 ServiceType = GetStr(api, "service_type"),
@@ -81,7 +75,7 @@ namespace VlessApp
 
         // Возвращает null, если это не наш формат либо в ссылке нет AmneziaWG.
         // reason заполняется понятным текстом, чтобы показать его пользователю.
-        public static Result Parse(string link, out string reason)
+        public static AmneziaLinkResult Parse(string link, out string reason)
         {
             reason = null;
             try
@@ -102,7 +96,7 @@ namespace VlessApp
 
         // Разбор уже распакованного JSON — общий путь для ссылки vpn:// и для
         // ответа API-шлюза, которые устроены одинаково.
-        public static Result ParseRoot(JsonObject root, out string reason)
+        public static AmneziaLinkResult ParseRoot(JsonObject root, out string reason)
         {
             reason = null;
             try
@@ -157,7 +151,7 @@ namespace VlessApp
                 string host = GetStr(root, "hostName");
                 if (string.IsNullOrEmpty(host)) host = GetStr(awg, "hostName");
 
-                return new Result
+                return new AmneziaLinkResult
                 {
                     ConfText = conf,
                     Name = GetStr(root, "description"),
