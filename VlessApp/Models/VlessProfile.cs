@@ -113,32 +113,22 @@ namespace VlessApp
             }
         }
 
-        // Имя без флаг-эмодзи: Windows рисует такую пару буквенным квадратиком
-        // «NL», и рядом с настоящим флагом это выглядело бы как мусор.
+        // Имя без флаг-эмодзи: системный Segoe UI рисует такую пару буквенным
+        // квадратиком «NL», поэтому сам флаг выводится в бейдже через Twemoji.
         [IgnoreDataMember]
         public string DisplayName => CountryFlags.StripFlagEmoji(Name);
 
         [IgnoreDataMember]
-        public Windows.UI.Xaml.Media.Imaging.WriteableBitmap FlagImage =>
-            CountryFlags.GetBitmap(EffectiveCountryCode);
+        public string FlagEmoji => CountryFlags.GetFlagEmoji(EffectiveCountryCode);
 
         [IgnoreDataMember]
         public Visibility FlagVisibility =>
-            FlagImage != null ? Visibility.Visible : Visibility.Collapsed;
-
-        // Страна известна, но флаг не нарисован — показываем буквенный значок.
-        [IgnoreDataMember]
-        public Visibility CodeBadgeVisibility =>
-            (FlagImage == null && !string.IsNullOrEmpty(EffectiveCountryCode))
-                ? Visibility.Visible : Visibility.Collapsed;
-
-        [IgnoreDataMember]
-        public string CountryBadgeText => EffectiveCountryCode;
+            !string.IsNullOrEmpty(FlagEmoji) ? Visibility.Visible : Visibility.Collapsed;
 
         // Страна не определилась вовсе — остаётся прежний глобус.
         [IgnoreDataMember]
         public Visibility GlobeVisibility =>
-            string.IsNullOrEmpty(EffectiveCountryCode) ? Visibility.Visible : Visibility.Collapsed;
+            string.IsNullOrEmpty(FlagEmoji) ? Visibility.Visible : Visibility.Collapsed;
 
         [IgnoreDataMember]
         public bool IsAmneziaWg =>

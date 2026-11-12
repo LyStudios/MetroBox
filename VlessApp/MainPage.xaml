@@ -322,21 +322,16 @@
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
 
-                                    <!-- Флаг страны / значок -->
-                                    <Grid Grid.Column="0" Width="40" Height="26" VerticalAlignment="Center" Margin="0,0,12,0">
-                                        <Border CornerRadius="4" BorderBrush="#2AFFFFFF" BorderThickness="1"
-                                                Visibility="{x:Bind FlagVisibility, Mode=OneWay}">
-                                            <Border.Background>
-                                                <ImageBrush ImageSource="{x:Bind FlagImage, Mode=OneWay}" Stretch="UniformToFill"/>
-                                            </Border.Background>
-                                        </Border>
-
-                                        <!-- Страна известна, но флага в наборе нет -->
+                                    <!-- Флаг страны (Twemoji COLRv0) / значок глобуса -->
+                                    <Grid Grid.Column="0" Width="40" Height="28" VerticalAlignment="Center" Margin="0,0,12,0">
                                         <Border CornerRadius="4" Background="#1A243A"
-                                                Visibility="{x:Bind CodeBadgeVisibility, Mode=OneWay}">
-                                            <TextBlock Text="{x:Bind CountryBadgeText, Mode=OneWay}"
-                                                       FontSize="12" FontWeight="Bold" Foreground="#38BDF8"
-                                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                Visibility="{x:Bind FlagVisibility, Mode=OneWay}">
+                                            <TextBlock Text="{x:Bind FlagEmoji, Mode=OneWay}"
+                                                       FontFamily="ms-appx:///Assets/Fonts/TwemojiMozilla.ttf#Twemoji Mozilla"
+                                                       IsColorFontEnabled="True"
+                                                       FontSize="22"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                       Margin="0,1,0,0"/>
                                         </Border>
 
                                         <!-- Страна не определилась -->
@@ -395,7 +390,7 @@
                         <!-- Название приложения (MetroBox) -->
                         <TextBlock Text="MetroBox" FontSize="26" FontWeight="Bold" Foreground="#38BDF8" HorizontalAlignment="Center"/>
                         <Border Background="#162238" CornerRadius="6" Padding="8,3" HorizontalAlignment="Center" Margin="0,6,0,6">
-                            <TextBlock Text="Версия 1.6.0.0 · Windows 10 Mobile" FontSize="11" FontWeight="SemiBold" Foreground="#94A3B8"/>
+                            <TextBlock Text="Версия 1.6.1.0 · Windows 10 Mobile" FontSize="11" FontWeight="SemiBold" Foreground="#94A3B8"/>
                         </Border>
                         <TextBlock Text="by LeenzeryDev" FontSize="12" FontWeight="SemiBold" Foreground="#38BDF8" HorizontalAlignment="Center" Margin="0,0,0,16"/>
 

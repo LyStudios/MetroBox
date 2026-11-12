@@ -141,14 +141,10 @@
       <DependentUpon>MainPage.xaml</DependentUpon>
     </Compile>
     <Compile Include="Properties\AssemblyInfo.cs" />
-    <Compile Include="AmneziaApi.cs" />
-    <Compile Include="AmneziaX25519.cs" />
-    <Compile Include="AppLog.cs" />
-    <Compile Include="AmneziaLink.cs" />
-    <Compile Include="CountryFlags.cs" />
-    <Compile Include="HappCrypto.cs" />
-    <Compile Include="VlessProfile.cs" />
-    <Compile Include="VpnManager.cs" />
+    <Compile Include="Crypto\AmneziaX25519.cs" />
+    <Compile Include="Crypto\HappCrypto.cs" />
+    <Compile Include="Helpers\AppLog.cs" />
+    <Compile Include="Helpers\CountryFlags.cs" />
     <Compile Include="Models\AmneziaCountry.cs" />
     <Compile Include="Models\AmneziaGatewayException.cs" />
     <Compile Include="Models\AmneziaLinkResult.cs" />
@@ -157,15 +153,19 @@
     <Compile Include="Models\AmneziaUnsupportedConfigException.cs" />
     <Compile Include="Models\ImportReport.cs" />
     <Compile Include="Models\ProfileGroup.cs" />
+    <Compile Include="Models\VlessProfile.cs" />
     <Compile Include="Mvvm\ObservableObject.cs" />
     <Compile Include="Mvvm\RelayCommand.cs" />
     <Compile Include="Mvvm\AsyncRelayCommand.cs" />
+    <Compile Include="Services\AmneziaApi.cs" />
+    <Compile Include="Services\AmneziaLink.cs" />
     <Compile Include="Services\PingService.cs" />
     <Compile Include="Services\ProfileStore.cs" />
-    <Compile Include="Services\VpnService.cs" />
-    <Compile Include="ViewModels\MainViewModel.cs" />
     <Compile Include="Services\QrDecoder.cs" />
     <Compile Include="Services\ShareLinkBuilder.cs" />
+    <Compile Include="Services\VpnManager.cs" />
+    <Compile Include="Services\VpnService.cs" />
+    <Compile Include="ViewModels\MainViewModel.cs" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">
@@ -175,6 +175,7 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="Properties\Default.rd.xml" />
+    <Content Include="Assets\Fonts\TwemojiMozilla.ttf" />
     <Content Include="Assets\LockScreenLogo.scale-100.png" />
     <Content Include="Assets\LockScreenLogo.scale-125.png" />
     <Content Include="Assets\LockScreenLogo.scale-150.png" />

@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
@@ -121,54 +121,54 @@
     <RestoreProjectStyle>PackageReference</RestoreProjectStyle>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="AwgConfig.cs" />
-    <Compile Include="AwgCrypto.cs" />
-    <Compile Include="AwgEngine.cs" />
-    <Compile Include="AwgTunnel.cs" />
-    <Compile Include="ByteAccumulator.cs" />
-    <Compile Include="ChainInputStream.cs" />
-    <Compile Include="ChainOutputStream.cs" />
-    <Compile Include="ChunkedDecoder.cs" />
-    <Compile Include="ChunkedDecodeState.cs" />
-    <Compile Include="CryptoSelfTest.cs" />
-    <Compile Include="Curve25519.cs" />
-    <Compile Include="FakeDns.cs" />
-    <Compile Include="FakeDnsTarget.cs" />
-    <Compile Include="FileLog.cs" />
-    <Compile Include="GrpcFramer.cs" />
-    <Compile Include="H2MuxRegistry.cs" />
-    <Compile Include="H2MuxTransport.cs" />
-    <Compile Include="H2Stream.cs" />
-    <Compile Include="Http2Conn.cs" />
-    <Compile Include="IDirectConn.cs" />
-    <Compile Include="LiveTile.cs" />
-    <Compile Include="MuxCarrier.cs" />
-    <Compile Include="NatEngine.cs" />
-    <Compile Include="NetDiag.cs" />
-    <Compile Include="NodeProbe.cs" />
-    <Compile Include="Poly1305.cs" />
+    <Compile Include="AmneziaWg\AwgConfig.cs" />
+    <Compile Include="AmneziaWg\AwgCrypto.cs" />
+    <Compile Include="AmneziaWg\AwgEngine.cs" />
+    <Compile Include="AmneziaWg\AwgTunnel.cs" />
+    <Compile Include="Crypto\CryptoSelfTest.cs" />
+    <Compile Include="Crypto\Curve25519.cs" />
+    <Compile Include="Crypto\Poly1305.cs" />
+    <Compile Include="Crypto\Tls13Crypto.cs" />
+    <Compile Include="Diagnostics\FileLog.cs" />
+    <Compile Include="Diagnostics\LiveTile.cs" />
+    <Compile Include="Diagnostics\NetDiag.cs" />
+    <Compile Include="Diagnostics\NodeProbe.cs" />
+    <Compile Include="Dns\FakeDns.cs" />
+    <Compile Include="Dns\FakeDnsTarget.cs" />
+    <Compile Include="Nat\ByteAccumulator.cs" />
+    <Compile Include="Nat\IDirectConn.cs" />
+    <Compile Include="Nat\NatEngine.cs" />
+    <Compile Include="Nat\TcpConn.cs" />
+    <Compile Include="Nat\TcpState.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
-    <Compile Include="RealityChannel.cs" />
-    <Compile Include="RealityTls13Stream.cs" />
-    <Compile Include="SsAeadBox.cs" />
-    <Compile Include="SsCipherSpec.cs" />
-    <Compile Include="SsConnection.cs" />
-    <Compile Include="SsCrypto.cs" />
-    <Compile Include="TcpConn.cs" />
-    <Compile Include="TcpState.cs" />
-    <Compile Include="Tls13Crypto.cs" />
-    <Compile Include="VisionConst.cs" />
-    <Compile Include="VisionTrafficState.cs" />
-    <Compile Include="VisionUnpad.cs" />
-    <Compile Include="VisionWrap.cs" />
-    <Compile Include="VlessConfig.cs" />
-    <Compile Include="VlessConnection.cs" />
+    <Compile Include="Protocols\Reality\RealityChannel.cs" />
+    <Compile Include="Protocols\Reality\RealityTls13Stream.cs" />
+    <Compile Include="Protocols\Reality\VisionConst.cs" />
+    <Compile Include="Protocols\Reality\VisionTrafficState.cs" />
+    <Compile Include="Protocols\Reality\VisionUnpad.cs" />
+    <Compile Include="Protocols\Reality\VisionWrap.cs" />
+    <Compile Include="Protocols\Shadowsocks\SsAeadBox.cs" />
+    <Compile Include="Protocols\Shadowsocks\SsCipherSpec.cs" />
+    <Compile Include="Protocols\Shadowsocks\SsConnection.cs" />
+    <Compile Include="Protocols\Shadowsocks\SsCrypto.cs" />
+    <Compile Include="Protocols\Vless\ChainInputStream.cs" />
+    <Compile Include="Protocols\Vless\ChainOutputStream.cs" />
+    <Compile Include="Protocols\Vless\VlessConfig.cs" />
+    <Compile Include="Protocols\Vless\VlessConnection.cs" />
+    <Compile Include="Transports\ChunkedDecoder.cs" />
+    <Compile Include="Transports\ChunkedDecodeState.cs" />
+    <Compile Include="Transports\GrpcFramer.cs" />
+    <Compile Include="Transports\H2MuxRegistry.cs" />
+    <Compile Include="Transports\H2MuxTransport.cs" />
+    <Compile Include="Transports\H2Stream.cs" />
+    <Compile Include="Transports\Http2Conn.cs" />
+    <Compile Include="Transports\MuxCarrier.cs" />
+    <Compile Include="Transports\WsTransport.cs" />
+    <Compile Include="Transports\XhttpSplitClient.cs" />
+    <Compile Include="Transports\XhttpStreamOne.cs" />
+    <Compile Include="Transports\XhttpTransportMode.cs" />
     <Compile Include="VlessVpnPlugin.cs" />
     <Compile Include="VpnBackgroundTask.cs" />
-    <Compile Include="WsTransport.cs" />
-    <Compile Include="XhttpSplitClient.cs" />
-    <Compile Include="XhttpStreamOne.cs" />
-    <Compile Include="XhttpTransportMode.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NETCore.UniversalWindowsPlatform">
